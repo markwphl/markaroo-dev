@@ -79,18 +79,23 @@ EXCLUDE_PATTERNS = [
 # ---------------------------------------------------------------------------
 
 class ProgressTracker:
-    """Simple console progress reporter."""
+    """Progress reporter that supports both console and callback modes."""
 
-    def __init__(self):
+    def __init__(self, callback=None):
         self.steps: list[str] = []
         self.stats: dict[str, int] = defaultdict(int)
+        self._callback = callback
 
     def log(self, message: str):
         self.steps.append(message)
         print(f"  [*] {message}")
+        if self._callback:
+            self._callback("log", message)
 
     def stat(self, key: str, value: int):
         self.stats[key] = value
+        if self._callback:
+            self._callback("stat", f"{key}: {value}")
 
     def summary(self):
         print("\n" + "=" * 60)
@@ -99,8 +104,17 @@ class ProgressTracker:
         for k, v in self.stats.items():
             print(f"  {k}: {v}")
         print("=" * 60 + "\n")
+        if self._callback:
+            self._callback("summary", json.dumps(dict(self.stats)))
+
+    def reset(self, callback=None):
+        """Reset state for a new scan run."""
+        self.steps.clear()
+        self.stats.clear()
+        self._callback = callback
 
 
+# Module-level default instance (used by CLI mode)
 progress = ProgressTracker()
 
 
@@ -516,11 +530,20 @@ def write_excel(layers: list[dict], output_path: str):
 # Main orchestrator
 # ---------------------------------------------------------------------------
 
-def scan(website_url: str, output_dir: str = ".") -> str:
+def scan(website_url: str, output_dir: str = ".", progress_callback=None) -> dict:
     """
     Full pipeline: crawl → enumerate → filter → deduplicate → export.
-    Returns the path to the output Excel file.
+
+    Args:
+        website_url: Root URL of the government website.
+        output_dir: Directory for output files.
+        progress_callback: Optional callable(event_type, message) for live updates.
+
+    Returns:
+        dict with keys: xl_path, md_path, stats, error (if any).
     """
+    progress.reset(callback=progress_callback)
+
     print("\n" + "=" * 60)
     print("  Government ArcGIS Feature Layer Scanner")
     print("=" * 60 + "\n")
@@ -530,7 +553,7 @@ def scan(website_url: str, output_dir: str = ".") -> str:
     if not rest_urls:
         progress.log("ERROR: Could not discover any ArcGIS REST Services Directory.")
         progress.summary()
-        sys.exit(1)
+        return {"error": "No ArcGIS REST endpoints found.", "stats": dict(progress.stats)}
 
     # Step 2 – enumerate all layers across discovered endpoints
     all_layers: list[dict] = []
@@ -540,7 +563,7 @@ def scan(website_url: str, output_dir: str = ".") -> str:
     if not all_layers:
         progress.log("ERROR: No feature layers found at the discovered endpoints.")
         progress.summary()
-        sys.exit(1)
+        return {"error": "No feature layers found.", "stats": dict(progress.stats)}
 
     # Step 3 – filter
     filtered = filter_layers(all_layers)
@@ -572,7 +595,12 @@ def scan(website_url: str, output_dir: str = ".") -> str:
     print(f"    Excel    : {os.path.abspath(xl_path)}")
     print()
 
-    return xl_path
+    return {
+        "xl_path": os.path.abspath(xl_path),
+        "md_path": os.path.abspath(md_path),
+        "stats": dict(progress.stats),
+        "layers": final_layers,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -594,7 +622,9 @@ def main():
     )
     args = parser.parse_args()
 
-    scan(args.url, args.output_dir)
+    result = scan(args.url, args.output_dir)
+    if result.get("error"):
+        sys.exit(1)
 
 
 if __name__ == "__main__":
