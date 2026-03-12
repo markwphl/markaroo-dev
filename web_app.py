@@ -47,93 +47,493 @@ INDEX_HTML = r"""
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Government ArcGIS Layer Scanner</title>
+<title>GIS Layer Scanner</title>
 <style>
-  :root { --bg: #0f172a; --surface: #1e293b; --border: #334155;
-          --text: #e2e8f0; --muted: #94a3b8; --accent: #38bdf8;
-          --green: #4ade80; --red: #f87171; --yellow: #fbbf24; }
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+
+  :root {
+    --bg: #ece7df;
+    --surface: #ffffff;
+    --surface-alt: #f5f1ec;
+    --border: #d6d0c8;
+    --border-light: #e4dfd8;
+    --text: #2c2c2c;
+    --text-secondary: #6b6560;
+    --text-muted: #8c857e;
+    --accent: #1a5c50;
+    --accent-hover: #154a41;
+    --accent-light: #e8f0ee;
+    --green: #2d7a4f;
+    --green-bg: #e6f4ec;
+    --red: #c0392b;
+    --red-bg: #fdecea;
+    --amber: #8b6914;
+    --amber-bg: #fef9ec;
+    --sidebar-w: 260px;
+  }
+
   * { box-sizing: border-box; margin: 0; padding: 0; }
-  body { font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
-         background: var(--bg); color: var(--text); min-height: 100vh;
-         display: flex; flex-direction: column; align-items: center;
-         padding: 2rem 1rem; }
-  h1 { font-size: 1.6rem; margin-bottom: .25rem; }
-  .subtitle { color: var(--muted); font-size: .9rem; margin-bottom: 2rem; }
-  .card { background: var(--surface); border: 1px solid var(--border);
-          border-radius: .75rem; padding: 1.5rem; width: 100%;
-          max-width: 760px; margin-bottom: 1.5rem; }
-  label { display: block; font-weight: 600; margin-bottom: .4rem; }
-  input[type="url"] { width: 100%; padding: .6rem .8rem; border-radius: .4rem;
-          border: 1px solid var(--border); background: var(--bg);
-          color: var(--text); font-size: 1rem; }
-  input[type="url"]:focus { outline: 2px solid var(--accent); }
-  button { padding: .6rem 1.4rem; border: none; border-radius: .4rem;
-           font-size: .95rem; cursor: pointer; font-weight: 600;
-           transition: opacity .15s; }
-  button:hover { opacity: .85; }
-  button:disabled { opacity: .4; cursor: not-allowed; }
-  .btn-primary { background: var(--accent); color: var(--bg); }
-  .btn-download { background: var(--green); color: var(--bg);
-                  margin-right: .5rem; margin-top: .5rem; text-decoration: none;
-                  display: inline-block; padding: .5rem 1rem; border-radius: .4rem;
-                  font-weight: 600; font-size: .9rem; }
-  .btn-download:hover { opacity: .85; }
-  #progress-box { max-height: 320px; overflow-y: auto; font-family: 'Cascadia Code',
-          'Fira Code', monospace; font-size: .82rem; line-height: 1.5;
-          background: var(--bg); border: 1px solid var(--border);
-          border-radius: .4rem; padding: .8rem; margin-top: 1rem;
-          display: none; }
-  #progress-box .log { color: var(--muted); }
-  #progress-box .stat { color: var(--yellow); }
-  #progress-box .error { color: var(--red); }
-  #progress-box .done { color: var(--green); font-weight: 700; }
-  #summary { display: none; margin-top: 1rem; }
-  #summary table { width: 100%; border-collapse: collapse; }
-  #summary th, #summary td { text-align: left; padding: .4rem .6rem;
-          border-bottom: 1px solid var(--border); }
-  #summary th { color: var(--accent); }
-  #downloads { display: none; margin-top: 1rem; }
-  .spinner { display: inline-block; width: 18px; height: 18px;
-             border: 3px solid var(--border); border-top-color: var(--accent);
-             border-radius: 50%; animation: spin .7s linear infinite;
-             vertical-align: middle; margin-right: .4rem; }
+
+  body {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    min-height: 100vh;
+    display: flex;
+  }
+
+  /* ---- Sidebar ---- */
+  .sidebar {
+    width: var(--sidebar-w);
+    min-height: 100vh;
+    background: var(--surface);
+    border-right: 1px solid var(--border-light);
+    padding: 1.5rem 0;
+    flex-shrink: 0;
+    display: flex;
+    flex-direction: column;
+  }
+  .sidebar-brand {
+    padding: 0 1.25rem 1.25rem;
+    border-bottom: 1px solid var(--border-light);
+    margin-bottom: .75rem;
+  }
+  .sidebar-brand h2 {
+    font-size: .95rem;
+    font-weight: 700;
+    color: var(--text);
+    letter-spacing: -.01em;
+  }
+  .sidebar-brand p {
+    font-size: .75rem;
+    color: var(--text-muted);
+    margin-top: .15rem;
+  }
+  .sidebar-section {
+    padding: .6rem 1.25rem .2rem;
+    font-size: .7rem;
+    font-weight: 600;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: .06em;
+  }
+  .sidebar-item {
+    display: flex;
+    align-items: center;
+    gap: .6rem;
+    padding: .5rem 1.25rem;
+    font-size: .85rem;
+    color: var(--text-secondary);
+    text-decoration: none;
+    cursor: pointer;
+    transition: background .12s, color .12s;
+    border: none;
+    background: none;
+    width: 100%;
+    text-align: left;
+    font-family: inherit;
+  }
+  .sidebar-item:hover { background: var(--surface-alt); color: var(--text); }
+  .sidebar-item.active { color: var(--accent); font-weight: 500; }
+  .sidebar-item svg { width: 18px; height: 18px; flex-shrink: 0; opacity: .7; }
+  .sidebar-item.active svg { opacity: 1; }
+  .sidebar-item .check { margin-left: auto; color: var(--accent); font-size: .85rem; }
+  .sidebar-spacer { flex: 1; }
+  .sidebar-footer {
+    padding: .75rem 1.25rem;
+    border-top: 1px solid var(--border-light);
+    font-size: .72rem;
+    color: var(--text-muted);
+  }
+
+  /* ---- Main content ---- */
+  .main {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 3rem 2rem 2rem;
+    overflow-y: auto;
+    min-height: 100vh;
+  }
+
+  .hero-title {
+    font-size: 1.75rem;
+    font-weight: 300;
+    color: var(--accent);
+    margin-bottom: 2rem;
+    text-align: center;
+  }
+
+  /* ---- Input card ---- */
+  .input-card {
+    width: 100%;
+    max-width: 680px;
+    background: var(--surface);
+    border: 1px solid var(--border-light);
+    border-radius: 1rem;
+    padding: 1rem 1.25rem;
+    box-shadow: 0 1px 4px rgba(0,0,0,.06);
+    margin-bottom: .5rem;
+  }
+  .context-bar {
+    font-size: .78rem;
+    color: var(--text-muted);
+    margin-bottom: .6rem;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  .context-bar a { color: var(--accent); text-decoration: none; font-weight: 500; }
+  .input-row {
+    display: flex;
+    align-items: center;
+    gap: .75rem;
+  }
+  .input-row input[type="url"] {
+    flex: 1;
+    border: none;
+    outline: none;
+    background: transparent;
+    font-family: inherit;
+    font-size: .95rem;
+    color: var(--text);
+    padding: .4rem 0;
+  }
+  .input-row input[type="url"]::placeholder { color: var(--text-muted); }
+  .btn-submit {
+    width: 38px; height: 38px;
+    border-radius: 50%;
+    border: none;
+    background: var(--accent);
+    color: #fff;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    flex-shrink: 0;
+    transition: background .15s;
+  }
+  .btn-submit:hover { background: var(--accent-hover); }
+  .btn-submit:disabled { opacity: .35; cursor: not-allowed; }
+  .btn-submit svg { width: 18px; height: 18px; }
+
+  .hint {
+    text-align: center;
+    font-size: .72rem;
+    color: var(--text-muted);
+    margin-top: .5rem;
+    margin-bottom: 2rem;
+  }
+
+  /* ---- Status line ---- */
+  #status-line {
+    text-align: center;
+    font-size: .85rem;
+    color: var(--text-secondary);
+    margin-bottom: 1rem;
+    min-height: 1.2em;
+  }
+  .spinner {
+    display: inline-block;
+    width: 16px; height: 16px;
+    border: 2.5px solid var(--border);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin .65s linear infinite;
+    vertical-align: middle;
+    margin-right: .35rem;
+  }
   @keyframes spin { to { transform: rotate(360deg); } }
-  #status-line { margin-top: .8rem; font-size: .9rem; color: var(--muted); }
-  /* Results table */
-  #results-table { display: none; margin-top: 1rem; overflow-x: auto; }
-  #results-table table { width: 100%; border-collapse: collapse; font-size: .82rem; }
-  #results-table th { background: var(--bg); color: var(--accent); position: sticky; top: 0; }
-  #results-table th, #results-table td { padding: .35rem .5rem; border: 1px solid var(--border);
-          white-space: nowrap; max-width: 280px; overflow: hidden; text-overflow: ellipsis; }
-  #results-table td:nth-child(4) { font-family: monospace; font-size: .75rem; }
+
+  /* ---- Tabs ---- */
+  .tabs {
+    display: none;
+    width: 100%;
+    max-width: 680px;
+    border-bottom: 1px solid var(--border-light);
+    margin-bottom: 1rem;
+    gap: 0;
+  }
+  .tabs.visible { display: flex; }
+  .tab-btn {
+    padding: .6rem 1.25rem;
+    font-family: inherit;
+    font-size: .85rem;
+    font-weight: 500;
+    color: var(--text-muted);
+    background: none;
+    border: none;
+    border-bottom: 2px solid transparent;
+    cursor: pointer;
+    transition: color .15s, border-color .15s;
+  }
+  .tab-btn:hover { color: var(--text); }
+  .tab-btn.active { color: var(--text); border-bottom-color: var(--accent); }
+
+  /* ---- Progress log ---- */
+  #progress-box {
+    display: none;
+    width: 100%;
+    max-width: 680px;
+    max-height: 280px;
+    overflow-y: auto;
+    background: var(--surface);
+    border: 1px solid var(--border-light);
+    border-radius: .75rem;
+    padding: 1rem 1.25rem;
+    font-size: .8rem;
+    line-height: 1.65;
+    margin-bottom: 1rem;
+  }
+  #progress-box .log { color: var(--text-secondary); }
+  #progress-box .stat { color: var(--amber); font-weight: 500; }
+  #progress-box .error { color: var(--red); }
+  #progress-box .done { color: var(--green); font-weight: 600; }
+
+  /* ---- Summary ---- */
+  #summary {
+    display: none;
+    width: 100%;
+    max-width: 680px;
+    margin-bottom: 1rem;
+  }
+  #summary h3 {
+    font-size: .8rem;
+    font-weight: 600;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: .05em;
+    margin-bottom: .5rem;
+  }
+  #summary table { width: 100%; border-collapse: collapse; }
+  #summary th, #summary td {
+    text-align: left;
+    padding: .45rem .75rem;
+    font-size: .85rem;
+  }
+  #summary tr { border-bottom: 1px solid var(--border-light); }
+  #summary th { color: var(--text-secondary); font-weight: 500; }
+  #summary td { color: var(--text); font-weight: 600; }
+
+  /* ---- Downloads ---- */
+  #downloads {
+    display: none;
+    width: 100%;
+    max-width: 680px;
+    margin-bottom: 1.25rem;
+  }
+  .btn-download {
+    display: inline-flex;
+    align-items: center;
+    gap: .4rem;
+    padding: .55rem 1.1rem;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: .6rem;
+    font-family: inherit;
+    font-size: .85rem;
+    font-weight: 500;
+    color: var(--text);
+    text-decoration: none;
+    margin-right: .5rem;
+    margin-bottom: .5rem;
+    transition: background .12s, border-color .12s;
+    cursor: pointer;
+  }
+  .btn-download:hover { background: var(--surface-alt); border-color: var(--accent); }
+  .btn-download svg { width: 16px; height: 16px; color: var(--accent); }
+
+  /* ---- Results table ---- */
+  #results-table {
+    display: none;
+    width: 100%;
+    max-width: 680px;
+    margin-bottom: 1rem;
+  }
+  #results-table h3 {
+    font-size: .8rem;
+    font-weight: 600;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: .05em;
+    margin-bottom: .5rem;
+  }
+  .table-scroll {
+    max-height: 340px;
+    overflow: auto;
+    background: var(--surface);
+    border: 1px solid var(--border-light);
+    border-radius: .75rem;
+  }
+  #results-table table { width: 100%; border-collapse: collapse; font-size: .8rem; }
+  #results-table th {
+    background: var(--surface-alt);
+    color: var(--text-secondary);
+    font-weight: 600;
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    font-size: .72rem;
+    text-transform: uppercase;
+    letter-spacing: .04em;
+  }
+  #results-table th, #results-table td {
+    padding: .5rem .75rem;
+    border-bottom: 1px solid var(--border-light);
+    text-align: left;
+    white-space: nowrap;
+    max-width: 240px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  #results-table tr:last-child td { border-bottom: none; }
+  #results-table tr:hover td { background: var(--surface-alt); }
+  #results-table td:nth-child(4) { font-family: 'SF Mono', 'Cascadia Code', monospace; font-size: .72rem; color: var(--text-secondary); }
+
+  /* ---- Quick-action cards (bottom) ---- */
+  .quick-actions {
+    display: none;
+    width: 100%;
+    max-width: 680px;
+    gap: .6rem;
+    flex-wrap: wrap;
+  }
+  .quick-actions.visible { display: flex; }
+  .action-card {
+    flex: 1 1 calc(50% - .3rem);
+    min-width: 200px;
+    background: var(--surface);
+    border: 1px solid var(--border-light);
+    border-radius: .6rem;
+    padding: .65rem 1rem;
+    font-family: inherit;
+    font-size: .85rem;
+    color: var(--text-secondary);
+    cursor: pointer;
+    transition: background .12s, border-color .12s;
+    text-align: left;
+    border-bottom: none;
+    display: block;
+    text-decoration: none;
+  }
+  .action-card:hover { background: var(--surface-alt); border-color: var(--accent); color: var(--text); }
+
+  /* ---- Responsive ---- */
+  @media (max-width: 800px) {
+    .sidebar { display: none; }
+    .main { padding: 2rem 1rem; }
+    .hero-title { font-size: 1.35rem; }
+  }
 </style>
 </head>
 <body>
-  <h1>Government ArcGIS Layer Scanner</h1>
-  <p class="subtitle">Find planning &amp; development feature layers from any local government website</p>
 
-  <div class="card">
-    <form id="scan-form">
-      <label for="url-input">Government Website URL</label>
-      <input id="url-input" type="url" name="url" required
-             placeholder="https://www.dublinohiousa.gov" autocomplete="url">
-      <div style="margin-top:1rem; display:flex; align-items:center;">
-        <button type="submit" class="btn-primary" id="scan-btn">Scan</button>
-        <span id="status-line"></span>
-      </div>
-    </form>
-
-    <div id="progress-box"></div>
-
-    <div id="summary">
-      <h3 style="margin-bottom:.5rem;">Summary</h3>
-      <table><tbody id="summary-body"></tbody></table>
-    </div>
-
-    <div id="results-table"></div>
-
-    <div id="downloads"></div>
+<!-- ====== Sidebar ====== -->
+<aside class="sidebar">
+  <div class="sidebar-brand">
+    <h2>GIS Layer Scanner</h2>
+    <p>ArcGIS Feature Layers</p>
   </div>
+
+  <div class="sidebar-section">Scanner</div>
+  <button class="sidebar-item active" onclick="showPanel('scan')">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+    New Scan
+    <span class="check">&#10003;</span>
+  </button>
+  <button class="sidebar-item" onclick="showPanel('scan')">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 013 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
+    Planning &amp; Zoning
+  </button>
+  <button class="sidebar-item" onclick="showPanel('scan')">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="9" y1="21" x2="9" y2="9"/></svg>
+    Community Dev
+  </button>
+
+  <div class="sidebar-section">Data</div>
+  <button class="sidebar-item" onclick="showPanel('scan')">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+    Parcels &amp; Land Use
+  </button>
+  <button class="sidebar-item" onclick="showPanel('scan')">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></svg>
+    Overlays &amp; Hazards
+  </button>
+
+  <div class="sidebar-section">Workflows</div>
+  <button class="sidebar-item" onclick="showPanel('scan')">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+    Deduplicate Layers
+  </button>
+  <button class="sidebar-item" onclick="showPanel('scan')">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+    Export Results
+  </button>
+
+  <div class="sidebar-spacer"></div>
+  <div class="sidebar-footer">v1.0 &middot; Intranet Tool</div>
+</aside>
+
+<!-- ====== Main content ====== -->
+<main class="main">
+  <h1 class="hero-title">How can I help you today?</h1>
+
+  <!-- Input -->
+  <div class="input-card">
+    <div class="context-bar">
+      <span>Searching local government ArcGIS REST endpoints</span>
+      <a href="#" onclick="return false;">Details</a>
+    </div>
+    <form id="scan-form" class="input-row">
+      <input id="url-input" type="url" name="url" required
+             placeholder="Enter a government website URL to scan"
+             autocomplete="url">
+      <button type="submit" class="btn-submit" id="scan-btn" title="Start scan">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>
+      </button>
+    </form>
+  </div>
+  <p class="hint">Crawls website for ArcGIS REST endpoints, filters planning layers, and exports results.</p>
+
+  <!-- Status -->
+  <div id="status-line"></div>
+
+  <!-- Tabs -->
+  <div class="tabs" id="tabs">
+    <button class="tab-btn active" data-tab="progress" onclick="switchTab(this)">Progress</button>
+    <button class="tab-btn" data-tab="results" onclick="switchTab(this)">Results</button>
+    <button class="tab-btn" data-tab="summary" onclick="switchTab(this)">Summary</button>
+  </div>
+
+  <!-- Tab panels -->
+  <div id="progress-box"></div>
+
+  <div id="results-table"></div>
+
+  <div id="summary">
+    <h3>Scan Statistics</h3>
+    <table><tbody id="summary-body"></tbody></table>
+  </div>
+
+  <div id="downloads"></div>
+
+  <!-- Quick-action suggestion cards (shown on initial state) -->
+  <div class="quick-actions visible" id="quick-actions">
+    <a class="action-card" href="#" onclick="prefill('https://www.dublinohiousa.gov'); return false;">
+      Scan Dublin, OH
+    </a>
+    <a class="action-card" href="#" onclick="prefill('https://www.columbus.gov'); return false;">
+      Scan Columbus, OH
+    </a>
+    <a class="action-card" href="#" onclick="prefill('https://www.westerville.org'); return false;">
+      Scan Westerville, OH
+    </a>
+    <a class="action-card" href="#" onclick="prefill('https://www.hilliardohio.gov'); return false;">
+      Scan Hilliard, OH
+    </a>
+  </div>
+</main>
 
 <script>
 const form = document.getElementById('scan-form');
@@ -144,6 +544,24 @@ const summaryDiv = document.getElementById('summary');
 const summaryBody = document.getElementById('summary-body');
 const downloadsDiv = document.getElementById('downloads');
 const resultsDiv = document.getElementById('results-table');
+const tabs = document.getElementById('tabs');
+const quickActions = document.getElementById('quick-actions');
+
+function prefill(url) {
+  document.getElementById('url-input').value = url;
+  document.getElementById('url-input').focus();
+}
+
+function showPanel(name) { /* placeholder for sidebar navigation */ }
+
+function switchTab(el) {
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+  el.classList.add('active');
+  const t = el.dataset.tab;
+  box.style.display = t === 'progress' ? 'block' : 'none';
+  resultsDiv.style.display = t === 'results' ? 'block' : 'none';
+  summaryDiv.style.display = t === 'summary' ? 'block' : 'none';
+}
 
 form.addEventListener('submit', async (e) => {
   e.preventDefault();
@@ -155,8 +573,13 @@ form.addEventListener('submit', async (e) => {
   summaryDiv.style.display = 'none'; summaryBody.innerHTML = '';
   downloadsDiv.style.display = 'none'; downloadsDiv.innerHTML = '';
   resultsDiv.style.display = 'none'; resultsDiv.innerHTML = '';
+  tabs.classList.add('visible');
+  quickActions.classList.remove('visible');
+  // Activate progress tab
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+  document.querySelector('.tab-btn[data-tab="progress"]').classList.add('active');
   btn.disabled = true;
-  statusLine.innerHTML = '<span class="spinner"></span> Scanning…';
+  statusLine.innerHTML = '<span class="spinner"></span> Scanning&hellip;';
 
   // Start scan
   let res;
@@ -167,7 +590,7 @@ form.addEventListener('submit', async (e) => {
       body: JSON.stringify({url})
     });
   } catch (err) {
-    statusLine.textContent = 'Network error – could not reach server.';
+    statusLine.textContent = 'Network error \u2013 could not reach server.';
     btn.disabled = false;
     return;
   }
@@ -194,13 +617,12 @@ form.addEventListener('submit', async (e) => {
       tr.innerHTML = `<th>${esc(k)}</th><td>${esc(String(v))}</td>`;
       summaryBody.appendChild(tr);
     }
-    summaryDiv.style.display = 'block';
   });
 
   evtSource.addEventListener('done', (e) => {
     evtSource.close();
     const data = JSON.parse(e.data);
-    statusLine.innerHTML = '<span style="color:var(--green);">&#10003;</span> Scan complete.';
+    statusLine.innerHTML = '<span style="color:var(--green);">&#10003;</span> Scan complete';
     btn.disabled = false;
 
     if (data.error) {
@@ -211,30 +633,36 @@ form.addEventListener('submit', async (e) => {
     // Download links
     downloadsDiv.innerHTML = '';
     if (data.xl_file) {
-      downloadsDiv.innerHTML += `<a class="btn-download" href="/api/download/${job_id}/xlsx">Download Excel (.xlsx)</a>`;
+      downloadsDiv.innerHTML += `<a class="btn-download" href="/api/download/${job_id}/xlsx"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>Excel (.xlsx)</a>`;
     }
     if (data.md_file) {
-      downloadsDiv.innerHTML += `<a class="btn-download" href="/api/download/${job_id}/md">Download Markdown (.md)</a>`;
+      downloadsDiv.innerHTML += `<a class="btn-download" href="/api/download/${job_id}/md"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>Markdown (.md)</a>`;
     }
     downloadsDiv.style.display = 'block';
 
     // Build preview table
     if (data.layers && data.layers.length) {
-      let html = '<h3 style="margin-bottom:.5rem;">Results Preview</h3>';
-      html += '<div style="max-height:300px;overflow:auto;">';
-      html += '<table><thead><tr><th>GIS Layer Name</th><th>Source System</th><th>Collection</th><th>API</th><th>Time Period</th><th>Update Frequency</th></tr></thead><tbody>';
+      let html = '<h3>Results Preview</h3>';
+      html += '<div class="table-scroll">';
+      html += '<table><thead><tr><th>GIS Layer Name</th><th>Source System</th><th>Collection</th><th>API Endpoint</th><th>Time Period</th><th>Update Freq.</th></tr></thead><tbody>';
       data.layers.forEach(l => {
         html += `<tr><td>${esc(l.layer_name)}</td><td>Esri ArcGIS</td><td>API</td><td title="${esc(l.layer_url)}">${esc(l.layer_url)}</td><td>Current</td><td>Ad Hoc</td></tr>`;
       });
       html += '</tbody></table></div>';
       resultsDiv.innerHTML = html;
-      resultsDiv.style.display = 'block';
     }
+
+    // Auto-switch to results tab
+    document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+    document.querySelector('.tab-btn[data-tab="results"]').classList.add('active');
+    box.style.display = 'none';
+    resultsDiv.style.display = 'block';
+    summaryDiv.style.display = 'none';
   });
 
   evtSource.onerror = () => {
     evtSource.close();
-    statusLine.innerHTML = 'Connection lost.';
+    statusLine.textContent = 'Connection lost.';
     btn.disabled = false;
   };
 });
