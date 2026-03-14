@@ -586,7 +586,6 @@ INDEX_HTML = r"""
   <div class="input-card">
     <div class="context-bar">
       <span>Pick a search option and insert the applicable URL below.</span>
-      <a href="#" onclick="return false;">Details</a>
     </div>
 
     <div class="radio-group" id="mode-group">
@@ -607,8 +606,8 @@ INDEX_HTML = r"""
       <label for="mode-gispage">
         <input type="radio" id="mode-gispage" name="scan-mode" value="gis_page">
         <div class="radio-label-text">
-          <strong>GIS Resources / Department Page</strong>
-          <span>I have the URL to the jurisdiction's GIS, open data, or department page</span>
+          <strong>GIS Resources Website</strong>
+          <span>I have the URL to the jurisdiction's GIS or open data resources website &mdash; scan will crawl for GIS endpoints</span>
         </div>
       </label>
     </div>
@@ -623,7 +622,7 @@ INDEX_HTML = r"""
     </form>
     <div id="url-feedback"></div>
   </div>
-  <p class="hint" id="hint-text">The tool finds GIS layers from the client's published directory of ArcGIS REST services (API endpoints). Only GIS layers found to be applicable to the Planning knowledge domain are enumerated (with effort to remove duplicates) and output to a table. Double check this list with your client for the correct feature layers and endpoint URLs.</p>
+  <p class="hint" id="hint-text">The tool finds GIS layers from the client's published directory of ArcGIS REST services (API endpoints).<br>Only GIS layers found to be applicable to the Planning knowledge domain are enumerated (with effort to remove duplicates) and output to a table.<br>Double check this list with your client for the correct feature layers and endpoint URLs.</p>
 
   <!-- Status -->
   <div id="status-line"></div>
@@ -691,7 +690,7 @@ let currentJobId = null;
 const MODE_CONFIG = {
   direct: {
     placeholder: 'https://gis.example.gov/arcgis/rest/services',
-    hint: 'The tool finds GIS layers from the client\'s published directory of ArcGIS REST services (API endpoints). Only GIS layers found to be applicable to the Planning knowledge domain are enumerated (with effort to remove duplicates) and output to a table. Double check this list with your client for the correct feature layers and endpoint URLs.'
+    hint: 'The tool finds GIS layers from the client\'s published directory of ArcGIS REST services (API endpoints).<br>Only GIS layers found to be applicable to the Planning knowledge domain are enumerated (with effort to remove duplicates) and output to a table.<br>Double check this list with your client for the correct feature layers and endpoint URLs.'
   },
   homepage: {
     placeholder: 'https://www.example.gov',
@@ -713,7 +712,7 @@ modeGroup.addEventListener('change', (e) => {
   const mode = e.target.value;
   const cfg = MODE_CONFIG[mode];
   document.getElementById('url-input').placeholder = cfg.placeholder;
-  hintEl.textContent = cfg.hint;
+  hintEl.innerHTML = cfg.hint;
   urlFeedback.textContent = '';
   urlFeedback.className = '';
   // Highlight selected label
