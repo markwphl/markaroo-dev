@@ -612,6 +612,13 @@ INDEX_HTML = r"""
       </label>
     </div>
 
+    <div id="search-terms-config" style="display:none; margin-bottom:.75rem;">
+      <label style="font-size:.75rem; font-weight:600; color:var(--text-secondary); display:block; margin-bottom:.3rem;">
+        Page Search Terms <span style="font-weight:400; color:var(--text-muted);">(crawl will prioritize pages matching these terms in the title or URL)</span>
+      </label>
+      <textarea id="search-terms" rows="3" style="width:100%; font-family:inherit; font-size:.78rem; border:1px solid var(--border-light); border-radius:.5rem; padding:.5rem .75rem; resize:vertical; background:var(--surface-alt); color:var(--text);">Planning, Zoning, Planning Commission, Development, Community Development, ZBA, Assessor, Assessments, Open Data, GIS, Geographic Information Systems, Maps, Citymap, Cityview, Countyview, Countymap, ZoningMap, PlanningMap</textarea>
+    </div>
+
     <form id="scan-form" class="input-row">
       <input id="url-input" type="text" name="url" required
              placeholder="https://example.gov/arcgis/rest/services"
@@ -686,6 +693,30 @@ const promptTextInput = document.getElementById('prompt-text-input');
 const promptTextSubmit = document.getElementById('prompt-text-submit');
 
 let currentJobId = null;
+let statusCycleTimer = null;
+let statusCycleIndex = 0;
+const STATUS_MESSAGES = ['Processing\u2026', 'Still working on this\u2026', 'Thanks for your patience\u2026'];
+
+function startStatusCycle() {
+  stopStatusCycle();
+  statusCycleIndex = 0;
+  statusLine.innerHTML = '<span class="spinner"></span> ' + STATUS_MESSAGES[0];
+  statusCycleTimer = setInterval(() => {
+    statusCycleIndex = (statusCycleIndex + 1) % STATUS_MESSAGES.length;
+    statusLine.innerHTML = '<span class="spinner"></span> ' + STATUS_MESSAGES[statusCycleIndex];
+  }, 20000);
+}
+
+function stopStatusCycle() {
+  if (statusCycleTimer) { clearInterval(statusCycleTimer); statusCycleTimer = null; }
+}
+
+function resetStatusCycle() {
+  // Restart the cycle timer — called when a new log event arrives
+  if (statusCycleTimer !== null || btn.disabled) {
+    startStatusCycle();
+  }
+}
 
 const MODE_CONFIG = {
   direct: {
@@ -715,12 +746,49 @@ modeGroup.addEventListener('change', (e) => {
   hintEl.innerHTML = cfg.hint;
   urlFeedback.textContent = '';
   urlFeedback.className = '';
+  // Show search terms config only for homepage mode
+  document.getElementById('search-terms-config').style.display = mode === 'homepage' ? 'block' : 'none';
   // Highlight selected label
   modeGroup.querySelectorAll('label').forEach(l => l.classList.remove('selected'));
   e.target.closest('label').classList.add('selected');
 });
 
-function showPanel(name) { /* placeholder for sidebar navigation */ }
+function showPanel(name) {
+  if (name === 'scan') {
+    // Full reset of the application
+    stopStatusCycle();
+    currentJobId = null;
+    btn.disabled = false;
+
+    // Clear URL input and feedback
+    document.getElementById('url-input').value = '';
+    urlFeedback.textContent = '';
+    urlFeedback.className = '';
+
+    // Reset radio to first option
+    document.getElementById('mode-direct').checked = true;
+    modeGroup.querySelectorAll('label').forEach(l => l.classList.remove('selected'));
+    document.querySelector('label[for="mode-direct"]').classList.add('selected');
+    const cfg = MODE_CONFIG['direct'];
+    document.getElementById('url-input').placeholder = cfg.placeholder;
+    hintEl.innerHTML = cfg.hint;
+
+    // Hide search terms config
+    document.getElementById('search-terms-config').style.display = 'none';
+
+    // Clear progress, results, summary, downloads
+    box.innerHTML = ''; box.style.display = 'none';
+    resultsDiv.innerHTML = ''; resultsDiv.style.display = 'none';
+    summaryDiv.style.display = 'none'; summaryBody.innerHTML = ''; summaryCards.innerHTML = '';
+    downloadsDiv.innerHTML = ''; downloadsDiv.style.display = 'none';
+    statusLine.innerHTML = '';
+    tabs.classList.remove('visible');
+
+    // Reset tabs to progress
+    document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+    document.querySelector('.tab-btn[data-tab="progress"]').classList.add('active');
+  }
+}
 
 function switchTab(el) {
   document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
@@ -859,12 +927,16 @@ form.addEventListener('submit', async (e) => {
 
   // Start scan
   const mode = getSelectedMode();
+  const payload = {url, mode};
+  if (mode === 'homepage') {
+    payload.search_terms = document.getElementById('search-terms').value;
+  }
   let res;
   try {
     res = await fetch('/api/scan', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({url, mode})
+      body: JSON.stringify(payload)
     });
   } catch (err) {
     statusLine.textContent = 'Network error \u2013 could not reach server.';
@@ -881,15 +953,14 @@ form.addEventListener('submit', async (e) => {
   }
 
   currentJobId = job_id;
-  statusLine.innerHTML = '<span class="spinner"></span> Scanning&hellip;';
+  startStatusCycle();
 
   // SSE progress stream
   const evtSource = new EventSource(`/api/progress/${job_id}`);
 
   evtSource.addEventListener('log', (e) => {
     addLine('log', e.data);
-    // Update status line with latest log
-    statusLine.innerHTML = '<span class="spinner"></span> ' + esc(e.data.substring(0, 80));
+    resetStatusCycle();
   });
   evtSource.addEventListener('stat', (e) => { addLine('stat', e.data); });
   evtSource.addEventListener('error_msg', (e) => {
@@ -930,6 +1001,7 @@ form.addEventListener('submit', async (e) => {
 
   evtSource.addEventListener('done', (e) => {
     evtSource.close();
+    stopStatusCycle();
     const data = JSON.parse(e.data);
     btn.disabled = false;
 
@@ -984,6 +1056,7 @@ form.addEventListener('submit', async (e) => {
 
   evtSource.onerror = () => {
     evtSource.close();
+    stopStatusCycle();
     if (btn.disabled) {
       statusLine.textContent = 'Connection to server lost.';
       addLine('error', 'Lost connection to the server. The scan may still be running on the backend.');
@@ -1037,10 +1110,16 @@ def api_scan():
     data = request.get_json(force=True)
     url = (data.get("url") or "").strip()
     mode = (data.get("mode") or "homepage").strip()
+    search_terms_str = (data.get("search_terms") or "").strip()
     if not url:
         return jsonify({"error": "URL is required."}), 400
     if mode not in ("direct", "homepage", "gis_page"):
         return jsonify({"error": "Invalid mode."}), 400
+
+    # Parse comma-separated search terms for homepage mode
+    search_terms = None
+    if mode == "homepage" and search_terms_str:
+        search_terms = [t.strip().lower() for t in search_terms_str.split(",") if t.strip()]
 
     job_id = uuid.uuid4().hex[:12]
     q: queue.Queue = queue.Queue()
@@ -1055,7 +1134,8 @@ def api_scan():
         try:
             job_output_dir = os.path.join(OUTPUT_DIR, job_id)
             result = scan(url, output_dir=job_output_dir, progress_callback=progress_cb,
-                          mode=mode, interaction=interaction)
+                          mode=mode, interaction=interaction,
+                          search_terms=search_terms)
             _jobs[job_id]["result"] = result
             _jobs[job_id]["status"] = "done"
             q.put(("done", json.dumps({

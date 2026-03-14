@@ -270,6 +270,181 @@ EXCLUDE_PATTERNS = [
 
 
 # ---------------------------------------------------------------------------
+# Dynamic keyword loading from planning-layer-pattern-skill.md
+# ---------------------------------------------------------------------------
+
+# Path to the planning layer pattern skill document (in repo)
+_SKILL_DOC_PATH = os.path.join(os.path.dirname(__file__), "docs", "planning-layer-pattern-skill.md")
+
+
+def _parse_keywords_from_table(md_text: str, section_heading: str) -> list[str]:
+    """Extract tokens from a markdown table under a given heading.
+    Looks for the first column (Token/Pattern) values."""
+    keywords: list[str] = []
+    in_section = False
+    in_table = False
+    for line in md_text.splitlines():
+        stripped = line.strip()
+        # Track headings
+        if stripped.startswith("#"):
+            if section_heading.lower() in stripped.lower():
+                in_section = True
+                in_table = False
+                continue
+            elif in_section and stripped.startswith("#"):
+                # Hit next section at same or higher level
+                in_section = False
+                in_table = False
+                continue
+        if not in_section:
+            continue
+        # Detect table rows (skip header separator)
+        if stripped.startswith("|") and not stripped.startswith("|---"):
+            cols = [c.strip() for c in stripped.split("|")]
+            cols = [c for c in cols if c]  # remove empty from leading/trailing |
+            if len(cols) >= 1:
+                token = cols[0]
+                # Skip header row
+                if token.lower() in ("token", "token / pattern", "layer name",
+                                      "abbreviation", "term", "signal"):
+                    continue
+                # Clean up: remove backticks, markdown formatting
+                token = token.replace("`", "").replace("*", "").strip()
+                if not token:
+                    continue
+                # Split on " / " for multi-variant entries (e.g. "Zoning / ZONING")
+                # and on " or " for alternatives
+                variants = re.split(r"\s*/\s*|\s+or\s+", token)
+                for v in variants:
+                    v = v.strip().lower()
+                    # Remove regex-style wildcards and parenthetical notes
+                    v = re.sub(r"\(.*?\)", "", v).strip()
+                    v = re.sub(r"\.\*", "", v).strip()
+                    if v and len(v) > 1:
+                        keywords.append(v)
+    return keywords
+
+
+def _parse_cluster_keywords(md_text: str, cluster_label: str) -> list[str]:
+    """Extract keywords from a Cluster paragraph like 'Cluster A: ...'
+    Keywords are listed after 'Keywords:' as comma-separated values."""
+    keywords: list[str] = []
+    in_cluster = False
+    for line in md_text.splitlines():
+        stripped = line.strip()
+        if cluster_label.lower() in stripped.lower() and stripped.startswith("#"):
+            in_cluster = True
+            continue
+        if in_cluster:
+            if stripped.startswith("#"):
+                break  # next section
+            if "keywords:" in stripped.lower():
+                # Parse comma-separated keywords after "Keywords:"
+                kw_part = stripped.split(":", 1)[1] if ":" in stripped else stripped
+                for kw in kw_part.split(","):
+                    kw = kw.strip().strip("`").strip("*").strip()
+                    # Remove regex-style patterns and parenthetical notes
+                    kw = re.sub(r"\(.*?\)", "", kw).strip()
+                    kw = re.sub(r"\.\*", " ", kw).strip()
+                    if kw and len(kw) > 1:
+                        keywords.append(kw.lower())
+    return keywords
+
+
+def reload_keywords_from_skill_doc():
+    """
+    Re-read the planning-layer-pattern-skill.md and update the module-level
+    keyword lists. Called at the start of every scan so changes to the doc
+    are picked up without restarting the server.
+    """
+    global TIER1_DEPARTMENT_TOKENS, TIER1_LANDUSE_TOKENS, TIER1_DEVELOPMENT_TOKENS
+    global SERVICE_KEYWORDS
+    global CLUSTER_A, CLUSTER_B, CLUSTER_C, CLUSTER_D, CLUSTER_E, CLUSTER_F
+    global CLUSTER_G, CLUSTER_H, LAYER_KEYWORDS
+    global EXCLUDE_SERVICE_TOKENS, EXCLUDE_LAYER_KEYWORDS
+
+    if not os.path.isfile(_SKILL_DOC_PATH):
+        return  # file not found — keep existing hardcoded defaults
+
+    try:
+        with open(_SKILL_DOC_PATH, "r", encoding="utf-8") as f:
+            md = f.read()
+    except OSError:
+        return  # read error — keep defaults
+
+    # --- Tier 1: Service path tokens ---
+    dept = _parse_keywords_from_table(md, "Explicit Department Identifiers")
+    if dept:
+        TIER1_DEPARTMENT_TOKENS = dept
+
+    landuse = _parse_keywords_from_table(md, "Land Use and Zoning Service Names")
+    parcel = _parse_keywords_from_table(md, "Parcel and Property Services")
+    if landuse or parcel:
+        TIER1_LANDUSE_TOKENS = landuse + parcel
+
+    dev = _parse_keywords_from_table(md, "Development Activity Services")
+    historic = _parse_keywords_from_table(md, "Historic Preservation Services")
+    if dev or historic:
+        TIER1_DEVELOPMENT_TOKENS = dev + historic
+
+    SERVICE_KEYWORDS = TIER1_DEPARTMENT_TOKENS + TIER1_LANDUSE_TOKENS + TIER1_DEVELOPMENT_TOKENS
+
+    # --- Tier 2: Layer name clusters ---
+    for label, attr in [
+        ("Cluster A", "CLUSTER_A"), ("Cluster B", "CLUSTER_B"),
+        ("Cluster C", "CLUSTER_C"), ("Cluster D", "CLUSTER_D"),
+        ("Cluster E", "CLUSTER_E"), ("Cluster F", "CLUSTER_F"),
+        ("Cluster G", "CLUSTER_G"), ("Cluster H", "CLUSTER_H"),
+    ]:
+        parsed = _parse_cluster_keywords(md, label)
+        if parsed:
+            globals()[attr] = parsed
+
+    LAYER_KEYWORDS = (
+        CLUSTER_A + CLUSTER_B + CLUSTER_C + CLUSTER_D +
+        CLUSTER_E + CLUSTER_F + CLUSTER_G + CLUSTER_H
+    )
+
+    # --- Exclusion signals ---
+    # Parse exclusion section tables/keywords
+    excl_svc: list[str] = []
+    excl_lyr: list[str] = []
+    in_exclusion = False
+    current_subsection = ""
+    for line in md.splitlines():
+        stripped = line.strip()
+        if "## 4. Exclusion Signals" in stripped:
+            in_exclusion = True
+            continue
+        if in_exclusion and stripped.startswith("## ") and "Exclusion" not in stripped:
+            break
+        if not in_exclusion:
+            continue
+        if stripped.startswith("###"):
+            current_subsection = stripped
+            continue
+        # Parse "Service name tokens:" lines
+        if "service name tokens:" in stripped.lower():
+            tokens_part = stripped.split(":", 1)[1] if ":" in stripped else ""
+            for t in tokens_part.split(","):
+                t = t.strip().strip("`").strip()
+                if t:
+                    excl_svc.append(t.lower())
+        # Parse "Layer name keywords:" lines
+        if "layer name keywords:" in stripped.lower():
+            kw_part = stripped.split(":", 1)[1] if ":" in stripped else ""
+            for kw in kw_part.split(","):
+                kw = kw.strip().strip("`").strip()
+                if kw and len(kw) > 1:
+                    excl_lyr.append(kw.lower())
+
+    if excl_svc:
+        EXCLUDE_SERVICE_TOKENS = excl_svc
+    if excl_lyr:
+        EXCLUDE_LAYER_KEYWORDS = excl_lyr
+
+
+# ---------------------------------------------------------------------------
 # Progress tracker (console-based for intranet/headless use)
 # ---------------------------------------------------------------------------
 
@@ -436,14 +611,25 @@ def extract_arcgis_rest_urls(text: str) -> set[str]:
     return urls
 
 
-def crawl_for_arcgis(start_url: str, interaction: InteractionRequest = None) -> set[str]:
+def crawl_for_arcgis(start_url: str, interaction: InteractionRequest = None,
+                     search_terms: list[str] = None) -> set[str]:
     """
     Multi-step crawl:
       1. Scrape the start URL for ArcGIS links or GIS-related pages.
       2. Follow GIS-related pages one level deeper.
       3. Collect all ArcGIS REST Services Directory root URLs found.
       4. If depth 3 exhausted with no results, prompt user for next step.
+
+    When search_terms is provided (homepage mode), only follow links whose
+    page title or URL contain at least one of the search terms — this avoids
+    crawling the entire jurisdiction website.
     """
+    # Build the link-relevance keyword list
+    crawl_keywords = list(GIS_LINK_KEYWORDS)  # always include GIS-related terms
+    if search_terms:
+        crawl_keywords = list(set(crawl_keywords + search_terms))
+        progress.log(f"Homepage crawl will prioritize pages matching: {', '.join(search_terms[:10])}{'…' if len(search_terms) > 10 else ''}")
+
     progress.log(f"Starting crawl at {start_url}")
     visited: set[str] = set()
     to_visit: list[tuple[str, int]] = [(start_url, 0)]
@@ -474,7 +660,7 @@ def crawl_for_arcgis(start_url: str, interaction: InteractionRequest = None) -> 
             progress.log(f"    ✓ Found ArcGIS REST endpoint(s) on this page")
             found_rest_urls.update(rest_urls)
 
-        # If we haven't gone too deep, follow GIS-related links
+        # If we haven't gone too deep, follow relevant links
         if depth < 3:
             soup = BeautifulSoup(text, "html.parser")
             for a in soup.find_all("a", href=True):
@@ -488,14 +674,14 @@ def crawl_for_arcgis(start_url: str, interaction: InteractionRequest = None) -> 
                     found_rest_urls.update(rest_in_href)
                     continue
 
-                # Follow links that look GIS-related (same domain or arcgis.com)
+                # Follow links that look relevant (same domain or arcgis.com)
                 parsed = urlparse(full_url)
                 is_same_domain = parsed.netloc == base_domain
                 is_arcgis = "arcgis.com" in parsed.netloc
 
                 if is_same_domain or is_arcgis:
                     href_lower = full_url.lower() + " " + link_text
-                    if any(kw in href_lower for kw in GIS_LINK_KEYWORDS):
+                    if any(kw in href_lower for kw in crawl_keywords):
                         if full_url not in visited:
                             to_visit.append((full_url, depth + 1))
         else:
@@ -977,7 +1163,8 @@ def write_excel(layers: list[dict], output_path: str):
 # ---------------------------------------------------------------------------
 
 def scan(website_url: str, output_dir: str = ".", progress_callback=None,
-         mode: str = "homepage", interaction: InteractionRequest = None) -> dict:
+         mode: str = "homepage", interaction: InteractionRequest = None,
+         search_terms: list[str] = None) -> dict:
     """
     Full pipeline: validate → crawl → enumerate → filter → deduplicate → export.
 
@@ -995,6 +1182,10 @@ def scan(website_url: str, output_dir: str = ".", progress_callback=None,
         dict with keys: xl_path, md_path, stats, error (if any).
     """
     progress.reset(callback=progress_callback)
+
+    # Re-read the planning layer pattern skill document from the repo
+    # so any updates to the keywords are picked up without restarting
+    reload_keywords_from_skill_doc()
 
     print("\n" + "=" * 60)
     print("  Government ArcGIS Feature Layer Scanner")
@@ -1027,7 +1218,8 @@ def scan(website_url: str, output_dir: str = ".", progress_callback=None,
         # Path B: crawl from homepage (mode="homepage") or GIS page (mode="gis_page")
         label = "GIS department page" if mode == "gis_page" else "jurisdiction homepage"
         progress.log(f"Crawl mode: starting from {label}")
-        rest_urls = crawl_for_arcgis(website_url, interaction=interaction)
+        rest_urls = crawl_for_arcgis(website_url, interaction=interaction,
+                                     search_terms=search_terms)
 
     if not rest_urls:
         progress.log("ERROR: Could not discover any ArcGIS REST Services Directory.")
