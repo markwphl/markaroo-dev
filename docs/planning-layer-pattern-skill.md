@@ -1,6 +1,6 @@
 # Planning Department GIS Layer Pattern Analysis
 **Source:** 300+ ArcGIS REST service layers across 7 municipal/county GIS environments  
-**Version:** 2.1 — v2.0 plus California statutory completions: RHNA layer patterns, SB 9/AB 2923 overlays, Mello-Roos standalone tokens, ADU zones  
+**Version:** 2.2 — v2.1 plus Hazards/Development Restrictions cluster, Administrative Boundaries expansion, and Landmarks/Civic Features cluster  
 **Purpose:** Equip an LLM with structured markers to identify layers associated with Planning Departments, Planning Commissions, and Community Development Departments in local government ArcGIS applications.
 
 ---
@@ -111,16 +111,27 @@ Keywords: `Master Plan`, `Master Planned`, `General Plan`, `Comprehensive Plan`,
 Keywords: `Historic District`, `Historic Sites`, `Historic Buildings`, `Historic Inventory`, `NRHP`, `Character Areas`, `Landmark`, `Local Historic District`, `National Historic District`, `Heritage District`, `Preservation District`
 
 ### Cluster E: Environmental Overlay (Planning-Regulated)
-Keywords: `Stream Margin`, `Wildfire Hazard`, `ESA` (Environmentally Sensitive Area), `Hallam Bluff`, `Non Attainment`, `Wetlands` (when paired with zoning context), `Watershed` (when paired with overlay/planning context), `Soils` (when paired with land use context), `Flood Zone` (when paired with parcel or zoning context), `Floodplain` (when in planning platform context), `Tree Preservation`, `Tree Canopy.*Regulation`, `Agricultural.*Buffer`, `Conservation.*Easement` (land use restriction)
+Keywords: `Stream Margin`, `Wildfire Hazard`, `Wildfire District`, `Wildfire Zone`, `Wildfire.*Buffer`, `Fire Zone`, `Fire.*Buffer`, `WUI` (Wildland-Urban Interface), `ESA` (Environmentally Sensitive Area), `Hallam Bluff`, `Non Attainment`, `Wetlands`, `Wetland Buffer`, `Riparian Buffer`, `Riparian Zone`, `Riparian Corridor`, `Watershed` (when paired with overlay/planning context), `Soils` (when paired with land use context), `Flood Zone`, `Floodplain`, `Floodway`, `Flood.*Plain`, `FEMA Flood`, `FEMA Floodplain`, `100 Year Flood`, `100-Year Flood`, `500 Year Flood`, `500-Year Flood`, `100 Year Floodway`, `Special Flood Hazard Area`, `SFHA`, `Flood Zone Parcels`, `Tree Preservation`, `Tree Canopy.*Regulation`, `Agricultural.*Buffer`, `Conservation.*Easement`, `Earthquake Zone`, `Seismic Zone`, `Seismic Hazard`, `Tsunami Zone`, `Tsunami Hazard`, `Liquefaction Zone`, `Steep Slope`, `Slope.*Hazard`, `Landslide.*Zone`, `Geologic Hazard`
 
 ### Cluster F: Cadastral and Property Reference
 Keywords: `Parcels`, `Assessor Parcels`, `PID` (Parcel ID), `TIF Parcels`, `CFD Parcels`, `BMR Parcels`, `Flood Zone Parcels`, `Religious.*Parcel`, `Building Footprints.*Landuse`, `Lot`, `Parcel Owner`, `Parcel Report`, `Innovation.*Parcel`, `Right of Way` (when in planning platform context)
 
-### Cluster G: Administrative Geography
-Keywords: `Neighborhoods`, `Neighborhood Boundary`, `City Limits`, `Wards`, `Council Wards`, `School Districts` (when in planning platform context), `Zipcodes` (when in planning platform context), `City Boundary`, `Municipal Boundary`, `Sphere of Influence`, `ETJ` (Extraterritorial Jurisdiction — Southeast/Texas common), `UDO` (Unified Development Ordinance boundary — Southeast), `Township` (when in county planning context)
+### Cluster G: Administrative Boundaries
+Keywords: `Neighborhoods`, `Neighborhood Boundary`, `City Limits`, `City Boundary`, `Municipal Boundary`, `Municipalities`, `County Boundary`, `County Line`, `Adjacent Counties`, `Wards`, `Council Wards`, `ZIP Codes`, `Zipcodes`, `Zip Code Boundaries`, `Census Tracts`, `Voting Districts`, `Election Districts`, `Precincts`, `School Districts`, `School Catchment`, `School Attendance Zone`, `School Boundary`, `Township`, `ETJ` (Extraterritorial Jurisdiction — Southeast/Texas common), `UDO` (Unified Development Ordinance boundary — Southeast), `Sphere of Influence`
 
 ### Cluster H: Regulatory Use Restrictions
 Keywords: `Billboard Buffer`, `Billboards Exclusionary Zone`, `Outdoor Lighting Code`, `Short Term Rental`, `Prohibited Area`, `Resort Hotels`, `Small Cell Wireless`, `Cell Towers`, `Scenic Byway`, `Pedestrian Mall`, `Gaming.*Overlay`, `Gaming.*District` (regulatory boundary, not license record), `Community Residence`, `Symphony.*District`, `Alcohol.*Buffer` (regulatory buffer around schools/churches — planning-administered), `Adult.*Use.*Overlay`, `Cannabis.*Overlay`, `Noise.*Contour` (when in land use context)
+
+### Cluster I: Hazards and Development Restrictions
+This cluster covers layers that define where development is prohibited, restricted, or subject to special review. These are planning-relevant when they inform permit decisions, zoning overlays, or general plan policies — regardless of which department hosts them.
+
+Keywords: `Floodplain`, `Flood Plain`, `Flood Zone`, `Floodway`, `Flood.*Area`, `100 Year Flood`, `100-Year Flood`, `100 Year Floodway`, `500 Year Flood`, `500-Year Flood`, `FEMA Flood`, `FEMA Floodplain`, `Special Flood Hazard Area`, `SFHA`, `FIRM`, `Fire Zone`, `Fire Hazard`, `Fire.*Buffer`, `Wildfire`, `Wildfire District`, `Wildfire Zone`, `Wildfire Hazard`, `WUI`, `Earthquake Zone`, `Seismic Zone`, `Seismic Hazard`, `Liquefaction`, `Tsunami Zone`, `Tsunami Hazard`, `Geologic Hazard`, `Steep Slope`, `Slope.*Restriction`, `Slope.*Overlay`, `Landslide`, `Erosion.*Zone`, `Contour` (when paired with development restriction context), `10.*Foot.*Contour`, `100.*Foot.*Contour`, `Topo.*Contour`, `Wetlands`, `Wetland.*Buffer`, `Wetland.*Setback`, `Riparian Buffer`, `Riparian Zone`, `Riparian Corridor`, `Stream.*Buffer`, `Stream.*Setback`, `River.*Buffer`, `Waterbody.*Setback`, `Rivers`, `Streams`, `Ponds`, `Lakes`, `Waterbodies`, `Water.*Bodies`, `Hydrology`, `Conservation Easement`, `Easement`, `Agricultural District`, `Right to Farm`, `RTF Zone`, `RTF District`, `Farm.*Buffer`
+
+### Cluster J: Landmarks and Civic Features
+Landmarks are planning-relevant as reference layers in site analysis, general plan maps, and community facilities planning. They qualify as supporting layers when co-located with planning services; do not use as standalone planning evidence without Tier 1 or other Tier 2 signals.
+
+Keywords: `High School`, `Middle School`, `Elementary School`, `Public School`, `School.*Location`, `School.*Point`, `School.*Site`, `Parks`, `Park.*Location`, `Park.*Point`, `Civic.*Area`, `Civic.*Center`, `City Hall`, `County.*Hall`, `County.*Courthouse`, `Courthouse`, `Fire Station`, `Police Station`, `Library`, `Community Center`, `Transit Stop`, `Transit Node`, `Bus Stop`, `Light Rail Stop`, `Train Station`, `Commuter Rail`, `Airport`, `Rivers`, `Streams`, `Lakes`, `Lakefront`, `Waterfront`, `Water.*Feature`, `Fountain`, `Playground`, `Ball Field`, `Athletic Field`, `Stadium`, `Sports Complex`, `Recreation.*Area`, `Open Space`, `Greenway`
+
 
 ---
 
@@ -183,6 +194,18 @@ These layers appeared in planning-adjacent services but require context to class
 | `Transit Buffer` / `Transit Priority Areas` | Could be transit agency data or planning overlay | Include when in CDD/Planning service or when name includes housing/land use context |
 | `FIRM Panels` | FEMA flood map administrative panels | Include only with parcel/zoning co-occurrence; exclude as standalone |
 | `ETJ` (Extraterritorial Jurisdiction) | Southeast/Texas boundary — sometimes in planning, sometimes general reference | Include — ETJ is a planning/annexation jurisdiction boundary |
+| `Contours` (10ft, 100ft, topo) | Base topographic data — used by all departments | Include when in a planning service or when co-located with slope/hazard/development restriction layers |
+| `Steep Slopes` | Could be engineering analysis or planning development restriction overlay | Include — development restriction overlay when in planning service; flag as moderate when standalone |
+| `Easements` (generic) | Could be utility easements (PW) or conservation/land use easements (Planning) | Include only when name specifies `Conservation Easement`, `Agricultural Easement`, or `Access Easement`; exclude `Utility Easement`, `Drainage Easement` |
+| `Agricultural Districts` | Could be state-designated ag district (planning) or tax assessment category | Include — planning land use protection mechanism in most states |
+| `Right to Farm` / `RTF Zone` | Agricultural land use protection — zoning/planning administered | Include — planning/zoning regulatory layer |
+| `Rivers` / `Streams` / `Lakes` / `Waterbodies` | Base hydrology reference or environmental overlay | Include as supporting/reference when in planning service; exclude as standalone base layer |
+| `Airports` | Could be transportation infrastructure (PW) or land use compatibility overlay (Planning) | Include when layer represents an Airport Influence Area, Airport Compatibility Zone, or noise contour; exclude when it is simply a point/facility location |
+| `Parks` (with land use qualifier) | Parks as land use designation differ from parks as facility locations | Include `Park.*Land Use`, `Open Space.*Designation`, `Parks.*Zoning`; exclude standalone facility location layers |
+| `Fire Stations` / `Police Stations` | Civic facility locations — not planning layers | Include only when in a planning service as community facilities reference; exclude as standalone operational layers |
+| `Schools` (point locations) | School locations vs. school district boundaries | Include school district/catchment/attendance zone boundaries (Cluster G); exclude point facility locations unless in planning service |
+| `Transit Stops` / `Transit Nodes` | Could be transit agency data or planning TOD overlay | Include when name references planning context (`Transit.*Priority`, `TOD.*Area`, `Transit.*Buffer`); flag standalone stop locations |
+| `Voting Districts` / `Precincts` | Election administration vs. planning reference geography | Include as administrative reference layer (Cluster G) when co-located with planning layers; low standalone confidence |
 
 ---
 
@@ -262,9 +285,11 @@ Use this scoring rubric to rank candidate layers.
 | Tier 1: URL service path is `ComDev`, `CDD`, `EnerGov`, `Planning`, or exact department name | +5 |
 | Tier 1: URL service path contains `Zoning`, `Land_Use`, `MasterPlan`, `Historic`, `Subdivision`, `TIF`, `PLU`, `HousingElement`, `Specific_Plans`, `Opportunity_Sites`, `Urban_Growth` | +4 |
 | Tier 1: URL service path contains `Development`, `Agreement`, `Growth`, `Plan`, `LandDev`, `ZCU`, `FLUM` | +3 |
-| Tier 2: Layer name contains 3+ keywords from a single semantic cluster (A–H) | +3 |
+| Tier 2: Layer name contains 3+ keywords from a single semantic cluster (A–I) | +3 |
 | Tier 2: Layer name contains 1–2 keywords from clusters A–F | +2 |
+| Tier 2: Layer name matches Cluster I (Hazards/Development Restrictions) — standalone | +2 |
 | Tier 2: Layer name contains administrative geography keyword (Cluster G) | +1 |
+| Tier 2: Layer name matches Cluster J (Landmarks/Civic Features) — supporting only, requires co-occurring Tier 1 or Tier 2 signal | +1 |
 | Exclusion: URL service path matches Public Works, Fire, Utilities, or Business License token | -5 |
 | Exclusion: Layer name matches business license type (alcohol, gaming, massage, etc.) | -4 |
 | Exclusion: Layer name matches utility infrastructure (sewer, water main, hydrant, etc.) | -3 |
@@ -453,4 +478,5 @@ Texas has unique planning law (Dillon's Rule + home rule + ETJ):
 
 *Analysis based on 300+ layers from 7 municipal/county ArcGIS environments: City of Aspen CO (ComDev), City of Grand Prairie TX (EnerGov), City of Dublin OH, Clark County / City of Las Vegas NV, Surry County NC, City of Sunnyvale CA (CDD), and City of Milpitas CA (ArcGIS Online).*  
 *Version 2.0 updates: Added CDD/Planning/LandDev Tier 1 tokens; California statutory terminology (Housing Element, Precise Plan, SOI, HQTC, BMR, CFD, ZCU); Southeast terminology (VAD, ETJ, UDO, FLUM, Sector Plan); Midwest terminology (Township, TIF District, Section-Township-Range); Southwest/Mountain West (PAD, WUI, Dark Sky); Texas (ETJ, TIRZ, PDD); ArcGIS Online flat-structure pattern; Single-service county MapServer structural note; expanded Exclusion signals for Utilities and Police; 10 new Ambiguous layer entries; expanded Abbreviations table.*  
-*Version 2.1 updates: Added RHNA layer name patterns to Tier 2 Cluster B and California table; added SB 9/AB 2923 overlay zone keywords to Tier 2 Cluster A and California table; added Mello-Roos standalone Tier 1 token to Parcel and Property Services; added ADU/Accessory Dwelling Unit keywords to Tier 2 Cluster A and California table; expanded California table entries to include layer naming guidance for each term.*
+*Version 2.1 updates: Added RHNA layer name patterns to Tier 2 Cluster B and California table; added SB 9/AB 2923 overlay zone keywords to Tier 2 Cluster A and California table; added Mello-Roos standalone Tier 1 token to Parcel and Property Services; added ADU/Accessory Dwelling Unit keywords to Tier 2 Cluster A and California table; expanded California table entries to include layer naming guidance for each term.*  
+*Version 2.2 updates: Expanded Cluster E with full flood hazard variant vocabulary (Floodplain, Floodway, 100/500 Year Flood, FEMA Floodplain, SFHA) and geologic/fire hazard terms (Earthquake Zone, Seismic Hazard, Tsunami Zone, Steep Slopes, Wildfire District/Zone); expanded Cluster G to full Administrative Boundaries coverage (Municipalities, Counties, ZIP Codes, Voting Districts, School Catchments); added Cluster I: Hazards and Development Restrictions (comprehensive flood, fire, geologic, wetland, riparian, agricultural, easement, and contour variants); added Cluster J: Landmarks and Civic Features (schools, parks, transit, civic buildings, water features, recreation facilities) with supporting-only scoring rule; added 14 new Ambiguous layer entries; updated scoring model to reference Clusters I and J.*
