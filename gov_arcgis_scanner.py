@@ -530,14 +530,19 @@ def write_excel(layers: list[dict], output_path: str):
 # Main orchestrator
 # ---------------------------------------------------------------------------
 
-def scan(website_url: str, output_dir: str = ".", progress_callback=None) -> dict:
+def scan(website_url: str, output_dir: str = ".", progress_callback=None,
+         mode: str = "homepage") -> dict:
     """
     Full pipeline: crawl → enumerate → filter → deduplicate → export.
 
     Args:
-        website_url: Root URL of the government website.
+        website_url: Root URL of the government website (or REST directory / GIS page).
         output_dir: Directory for output files.
         progress_callback: Optional callable(event_type, message) for live updates.
+        mode: Workflow mode selected by user:
+            "direct"   – URL is an ArcGIS REST Services Directory root (Path A).
+            "homepage" – URL is the jurisdiction's main website (Path B).
+            "gis_page" – URL is a GIS department / resources page (Path B).
 
     Returns:
         dict with keys: xl_path, md_path, stats, error (if any).
@@ -548,8 +553,22 @@ def scan(website_url: str, output_dir: str = ".", progress_callback=None) -> dic
     print("  Government ArcGIS Feature Layer Scanner")
     print("=" * 60 + "\n")
 
-    # Step 1 – find ArcGIS REST endpoints
-    rest_urls = crawl_for_arcgis(website_url)
+    # Step 1 – find ArcGIS REST endpoints (skipped for "direct" mode)
+    if mode == "direct":
+        # Path A: user provided the REST Services Directory URL directly
+        rest_url = website_url.rstrip("/")
+        # Normalise to the root services directory
+        idx = rest_url.lower().find("/rest/services")
+        if idx != -1:
+            rest_url = rest_url[: idx + len("/rest/services")]
+        rest_urls = {rest_url}
+        progress.log(f"Direct mode: using ArcGIS REST directory at {rest_url}")
+    else:
+        # Path B: crawl from homepage (mode="homepage") or GIS page (mode="gis_page")
+        label = "GIS department page" if mode == "gis_page" else "jurisdiction homepage"
+        progress.log(f"Crawl mode: starting from {label}")
+        rest_urls = crawl_for_arcgis(website_url)
+
     if not rest_urls:
         progress.log("ERROR: Could not discover any ArcGIS REST Services Directory.")
         progress.summary()

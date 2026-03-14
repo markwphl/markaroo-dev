@@ -226,6 +226,44 @@ INDEX_HTML = r"""
     margin-bottom: 2rem;
   }
 
+  /* ---- Radio group ---- */
+  .radio-group {
+    display: flex;
+    flex-direction: column;
+    gap: .45rem;
+    margin-bottom: .75rem;
+  }
+  .radio-group label {
+    display: flex;
+    align-items: flex-start;
+    gap: .5rem;
+    font-size: .82rem;
+    color: var(--text-secondary);
+    cursor: pointer;
+    padding: .35rem .5rem;
+    border-radius: .5rem;
+    transition: background .12s;
+  }
+  .radio-group label:hover { background: var(--surface-alt); }
+  .radio-group label.selected { background: var(--accent-light); color: var(--text); }
+  .radio-group input[type="radio"] {
+    accent-color: var(--accent);
+    margin-top: .15rem;
+    flex-shrink: 0;
+  }
+  .radio-label-text strong {
+    display: block;
+    font-size: .82rem;
+    font-weight: 600;
+    color: var(--text);
+    line-height: 1.3;
+  }
+  .radio-label-text span {
+    font-size: .72rem;
+    color: var(--text-muted);
+    line-height: 1.3;
+  }
+
   /* ---- Status line ---- */
   #status-line {
     text-align: center;
@@ -485,16 +523,41 @@ INDEX_HTML = r"""
       <span>Searching local government ArcGIS REST endpoints</span>
       <a href="#" onclick="return false;">Details</a>
     </div>
+
+    <div class="radio-group" id="mode-group">
+      <label class="selected" for="mode-direct">
+        <input type="radio" id="mode-direct" name="scan-mode" value="direct" checked>
+        <div class="radio-label-text">
+          <strong>ArcGIS REST Services Directory</strong>
+          <span>I have the root URL to the jurisdiction's ArcGIS REST services directory</span>
+        </div>
+      </label>
+      <label for="mode-homepage">
+        <input type="radio" id="mode-homepage" name="scan-mode" value="homepage">
+        <div class="radio-label-text">
+          <strong>Jurisdiction's Main Website</strong>
+          <span>I have the jurisdiction's homepage &mdash; scan will crawl for GIS endpoints</span>
+        </div>
+      </label>
+      <label for="mode-gispage">
+        <input type="radio" id="mode-gispage" name="scan-mode" value="gis_page">
+        <div class="radio-label-text">
+          <strong>GIS Resources / Department Page</strong>
+          <span>I have the URL to the jurisdiction's GIS, open data, or department page</span>
+        </div>
+      </label>
+    </div>
+
     <form id="scan-form" class="input-row">
       <input id="url-input" type="url" name="url" required
-             placeholder="Enter a government website URL to scan"
+             placeholder="https://gis.example.gov/arcgis/rest/services"
              autocomplete="url">
       <button type="submit" class="btn-submit" id="scan-btn" title="Start scan">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>
       </button>
     </form>
   </div>
-  <p class="hint">Crawls website for ArcGIS REST endpoints, filters planning layers, and exports results.</p>
+  <p class="hint" id="hint-text">Enumerates feature layers from the ArcGIS REST services directory.</p>
 
   <!-- Status -->
   <div id="status-line"></div>
@@ -547,6 +610,40 @@ const resultsDiv = document.getElementById('results-table');
 const tabs = document.getElementById('tabs');
 const quickActions = document.getElementById('quick-actions');
 
+const hintEl = document.getElementById('hint-text');
+const modeGroup = document.getElementById('mode-group');
+
+const MODE_CONFIG = {
+  direct: {
+    placeholder: 'https://gis.example.gov/arcgis/rest/services',
+    hint: 'Enumerates feature layers from the ArcGIS REST services directory.'
+  },
+  homepage: {
+    placeholder: 'https://www.example.gov',
+    hint: 'Crawls the jurisdiction website to discover ArcGIS REST endpoints.'
+  },
+  gis_page: {
+    placeholder: 'https://www.example.gov/departments/gis',
+    hint: 'Scans the GIS department page for ArcGIS REST endpoint links.'
+  }
+};
+
+function getSelectedMode() {
+  return document.querySelector('input[name="scan-mode"]:checked').value;
+}
+
+// Update placeholder and hint when radio selection changes
+modeGroup.addEventListener('change', (e) => {
+  if (e.target.name !== 'scan-mode') return;
+  const mode = e.target.value;
+  const cfg = MODE_CONFIG[mode];
+  document.getElementById('url-input').placeholder = cfg.placeholder;
+  hintEl.textContent = cfg.hint;
+  // Highlight selected label
+  modeGroup.querySelectorAll('label').forEach(l => l.classList.remove('selected'));
+  e.target.closest('label').classList.add('selected');
+});
+
 function prefill(url) {
   document.getElementById('url-input').value = url;
   document.getElementById('url-input').focus();
@@ -582,12 +679,13 @@ form.addEventListener('submit', async (e) => {
   statusLine.innerHTML = '<span class="spinner"></span> Scanning&hellip;';
 
   // Start scan
+  const mode = getSelectedMode();
   let res;
   try {
     res = await fetch('/api/scan', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({url})
+      body: JSON.stringify({url, mode})
     });
   } catch (err) {
     statusLine.textContent = 'Network error \u2013 could not reach server.';
@@ -699,8 +797,11 @@ def index():
 def api_scan():
     data = request.get_json(force=True)
     url = (data.get("url") or "").strip()
+    mode = (data.get("mode") or "homepage").strip()
     if not url:
         return jsonify({"error": "URL is required."}), 400
+    if mode not in ("direct", "homepage", "gis_page"):
+        return jsonify({"error": "Invalid mode."}), 400
 
     job_id = uuid.uuid4().hex[:12]
     q: queue.Queue = queue.Queue()
@@ -712,7 +813,8 @@ def api_scan():
     def run():
         try:
             job_output_dir = os.path.join(OUTPUT_DIR, job_id)
-            result = scan(url, output_dir=job_output_dir, progress_callback=progress_cb)
+            result = scan(url, output_dir=job_output_dir, progress_callback=progress_cb,
+                          mode=mode)
             _jobs[job_id]["result"] = result
             _jobs[job_id]["status"] = "done"
             q.put(("done", json.dumps({
