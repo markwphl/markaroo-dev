@@ -47,7 +47,7 @@ INDEX_HTML = r"""
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>GIS Layer Scanner</title>
+<title>GIS Data Finder</title>
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
 
@@ -194,11 +194,12 @@ INDEX_HTML = r"""
     flex: 1;
     border: none;
     outline: none;
-    background: transparent;
+    background: #f0f0f0;
     font-family: inherit;
     font-size: .95rem;
     color: var(--text);
-    padding: .4rem 0;
+    padding: .5rem .75rem;
+    border-radius: .5rem;
   }
   .input-row input[type="url"]::placeholder { color: var(--text-muted); }
   .btn-submit {
@@ -470,8 +471,8 @@ INDEX_HTML = r"""
 <!-- ====== Sidebar ====== -->
 <aside class="sidebar">
   <div class="sidebar-brand">
-    <h2>GIS Layer Scanner</h2>
-    <p>ArcGIS Feature Layers</p>
+    <h2>GIS Data Finder</h2>
+    <p>Search for a client's GIS Layers and endpoints</p>
   </div>
 
   <div class="sidebar-section">Scanner</div>
@@ -480,34 +481,6 @@ INDEX_HTML = r"""
     New Scan
     <span class="check">&#10003;</span>
   </button>
-  <button class="sidebar-item" onclick="showPanel('scan')">
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 013 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
-    Planning &amp; Zoning
-  </button>
-  <button class="sidebar-item" onclick="showPanel('scan')">
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="9" y1="21" x2="9" y2="9"/></svg>
-    Community Dev
-  </button>
-
-  <div class="sidebar-section">Data</div>
-  <button class="sidebar-item" onclick="showPanel('scan')">
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
-    Parcels &amp; Land Use
-  </button>
-  <button class="sidebar-item" onclick="showPanel('scan')">
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></svg>
-    Overlays &amp; Hazards
-  </button>
-
-  <div class="sidebar-section">Workflows</div>
-  <button class="sidebar-item" onclick="showPanel('scan')">
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
-    Deduplicate Layers
-  </button>
-  <button class="sidebar-item" onclick="showPanel('scan')">
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-    Export Results
-  </button>
 
   <div class="sidebar-spacer"></div>
   <div class="sidebar-footer">v1.0 &middot; Intranet Tool</div>
@@ -515,12 +488,12 @@ INDEX_HTML = r"""
 
 <!-- ====== Main content ====== -->
 <main class="main">
-  <h1 class="hero-title">How can I help you today?</h1>
+  <h1 class="hero-title">How can I help you prepare a GIS Layer List for the Planning Data Table?</h1>
 
   <!-- Input -->
   <div class="input-card">
     <div class="context-bar">
-      <span>Searching local government ArcGIS REST endpoints</span>
+      <span>Pick a search option and insert the applicable URL below.</span>
       <a href="#" onclick="return false;">Details</a>
     </div>
 
@@ -550,7 +523,7 @@ INDEX_HTML = r"""
 
     <form id="scan-form" class="input-row">
       <input id="url-input" type="url" name="url" required
-             placeholder="https://gis.example.gov/arcgis/rest/services"
+             placeholder="Insert web address here"
              autocomplete="url">
       <button type="submit" class="btn-submit" id="scan-btn" title="Start scan">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>
@@ -581,21 +554,6 @@ INDEX_HTML = r"""
 
   <div id="downloads"></div>
 
-  <!-- Quick-action suggestion cards (shown on initial state) -->
-  <div class="quick-actions visible" id="quick-actions">
-    <a class="action-card" href="#" onclick="prefill('https://www.dublinohiousa.gov'); return false;">
-      Scan Dublin, OH
-    </a>
-    <a class="action-card" href="#" onclick="prefill('https://www.columbus.gov'); return false;">
-      Scan Columbus, OH
-    </a>
-    <a class="action-card" href="#" onclick="prefill('https://www.westerville.org'); return false;">
-      Scan Westerville, OH
-    </a>
-    <a class="action-card" href="#" onclick="prefill('https://www.hilliardohio.gov'); return false;">
-      Scan Hilliard, OH
-    </a>
-  </div>
 </main>
 
 <script>
@@ -608,22 +566,21 @@ const summaryBody = document.getElementById('summary-body');
 const downloadsDiv = document.getElementById('downloads');
 const resultsDiv = document.getElementById('results-table');
 const tabs = document.getElementById('tabs');
-const quickActions = document.getElementById('quick-actions');
 
 const hintEl = document.getElementById('hint-text');
 const modeGroup = document.getElementById('mode-group');
 
 const MODE_CONFIG = {
   direct: {
-    placeholder: 'https://gis.example.gov/arcgis/rest/services',
+    placeholder: 'Insert web address here',
     hint: 'Enumerates feature layers from the ArcGIS REST services directory.'
   },
   homepage: {
-    placeholder: 'https://www.example.gov',
+    placeholder: 'Insert web address here',
     hint: 'Crawls the jurisdiction website to discover ArcGIS REST endpoints.'
   },
   gis_page: {
-    placeholder: 'https://www.example.gov/departments/gis',
+    placeholder: 'Insert web address here',
     hint: 'Scans the GIS department page for ArcGIS REST endpoint links.'
   }
 };
@@ -671,7 +628,6 @@ form.addEventListener('submit', async (e) => {
   downloadsDiv.style.display = 'none'; downloadsDiv.innerHTML = '';
   resultsDiv.style.display = 'none'; resultsDiv.innerHTML = '';
   tabs.classList.add('visible');
-  quickActions.classList.remove('visible');
   // Activate progress tab
   document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
   document.querySelector('.tab-btn[data-tab="progress"]').classList.add('active');
