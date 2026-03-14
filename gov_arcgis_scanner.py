@@ -15,6 +15,7 @@ import os
 import re
 import sys
 import time
+import threading
 from collections import defaultdict
 from difflib import SequenceMatcher
 from typing import Optional
@@ -51,24 +52,218 @@ GIS_LINK_KEYWORDS = [
     "experience.arcgis.com", "arcgis.com",
 ]
 
-# Map-service-level keywords (folder or service name) for planning/dev layers
-SERVICE_KEYWORDS = [
-    "planning", "community development", "commdev", "development",
-    "zoning", "land use", "landuse", "community", "neighborhood",
-    "building", "permits", "code enforcement",
+# ---------------------------------------------------------------------------
+# Tier 1 — Service Path Signals (per planning-layer-pattern-skill.md)
+# ---------------------------------------------------------------------------
+
+# Department identifiers in service path (+5 confidence)
+TIER1_DEPARTMENT_TOKENS = [
+    "comdev", "cdd", "planning", "landdev", "communitydevelopment",
+    "community_development", "energov", "plu", "rois", "p_d", "cd",
 ]
 
-# Feature-layer-level keywords we want to keep
-LAYER_KEYWORDS = [
-    "parcel", "zoning", "overlay", "planned development", "pud",
-    "master plan", "land use", "landuse", "address", "hazard",
-    "neighborhood", "floodplain", "flood", "zone", "planning area",
-    "assessor", "historical district", "historic district", "greenway",
-    "annexation", "subdivision", "plat", "comprehensive plan",
-    "future land use", "entitlement", "setback", "corridor",
+# Land use / zoning service name tokens (+4 confidence)
+TIER1_LANDUSE_TOKENS = [
+    "zoning", "land_use", "landuse", "future_land_use", "general_plan",
+    "residential_zoning", "masterplan", "master_plan", "master_planned",
+    "historic_district", "nrhp", "subdivision", "tif_parcels", "tif_zones",
+    "housing_element", "housingelement", "specific_plans", "specificplans",
+    "precise_plan", "preciseplan", "opportunity_sites", "urban_growth",
+    "ugb", "parcels", "form_based_code", "form.based.code",
+    "comprehensive_plan", "flum", "special_area_plan", "mello_roos",
+    "melloroos", "mello-roos", "zcu",
 ]
 
-# Layer-name patterns to EXCLUDE (rasters, imagery, lidar, etc.)
+# Development / planning service name tokens (+3 confidence)
+TIER1_DEVELOPMENT_TOKENS = [
+    "development", "agreement", "growth", "plan", "development_agreement",
+    "outside_development", "downtown", "dtmasterplan", "envision",
+    "growth_framework", "corridor_plan", "sector_plan",
+]
+
+# Combined list for simple boolean check (backward compat)
+SERVICE_KEYWORDS = (
+    TIER1_DEPARTMENT_TOKENS + TIER1_LANDUSE_TOKENS + TIER1_DEVELOPMENT_TOKENS
+)
+
+# ---------------------------------------------------------------------------
+# Tier 2 — Layer Name Keyword Signals (8 semantic clusters)
+# ---------------------------------------------------------------------------
+
+# Cluster A: Zoning and Land Use Regulation
+CLUSTER_A = [
+    "zoning", "zone", "zone overlay", "zone map", "overlay", "land use",
+    "future land use", "general plan", "comprehensive plan", "flum",
+    "planned development", "form-based code", "form based code", "infill",
+    "residential zoning", "non attainment", "ugb", "urban growth boundary",
+    "zoning code update", "zcu", "hillside code", "hillside regulation",
+    "heights", "tree zone", "tree preservation",
+    # California SB 9 / AB 2923
+    "sb 9", "ab 2923", "two-unit overlay", "two unit overlay",
+    "lot split zone", "lot split", "state density bonus", "density bonus",
+    "ministerial zone", "ministerial",
+    # ADU
+    "adu overlay", "adu zone", "accessory dwelling", "junior adu", "adu",
+    # Southeast
+    "udo", "unified development ordinance", "tnd",
+    "traditional neighborhood", "rural preservation",
+    # Midwest
+    "overlay district", "conservation district",
+]
+
+# Cluster B: Development Review and Entitlements
+CLUSTER_B = [
+    "subdivision", "subdivisions", "subdivision sections",
+    "special use permit", "development agreement", "agreement area",
+    "pace agreement", "tdr", "transfer of development rights",
+    "tif", "tax increment", "annexation", "annex", "deannex",
+    "outside development", "planned development", "planned unit development",
+    "pud", "housing element", "housing element sites", "by-right",
+    "opportunity sites", "project development", "project developments",
+    "project pipeline", "innovation parcel",
+    # Housing
+    "bmr", "below market rate", "low income housing", "affordable housing",
+    "cfd", "cfd parcels", "mello-roos", "mello_roos", "melloroos",
+    # Southeast / Regional
+    "vad", "voluntary agricultural district", "voluntary agricultural",
+    # California RHNA
+    "rhna", "rhna sites", "rhna allocation", "rezoning rhna",
+    # Midwest
+    "enterprise zone", "special assessment district", "tax abatement",
+    # Texas
+    "pdd", "planned development district", "sup", "specific use permit",
+    "reinvestment zone", "tirz", "4b sales tax",
+    # Southwest
+    "pad", "planned area development",
+    # General
+    "conservation subdivision", "activity center",
+    "plat", "entitlement", "setback", "permits",
+]
+
+# Cluster C: Comprehensive / Master Planning
+CLUSTER_C = [
+    "master plan", "master planned", "general plan", "comprehensive plan",
+    "future land use", "growth framework", "character areas",
+    "special area plan", "specific plans", "specific plan", "precise plan",
+    "precise plan area", "civic master plan", "downtown plan",
+    "town center plan", "viewplane", "mtn viewplane", "greenline",
+    "sphere of influence", "urban growth boundary",
+    "transit priority area", "high quality transit corridor", "hqtc",
+    "transit buffer", "midtown boundary", "corridor plan", "corridor",
+    "small area plan", "area plan", "sector plan",
+    # Southwest
+    "rural planning area", "thoroughfare plan",
+]
+
+# Cluster D: Historic Preservation
+CLUSTER_D = [
+    "historic district", "historic sites", "historic buildings",
+    "historic inventory", "historical inventory", "historical district",
+    "nrhp", "character areas", "landmark", "local historic district",
+    "national historic district", "heritage district", "preservation district",
+]
+
+# Cluster E: Environmental Overlay (Planning-Regulated)
+CLUSTER_E = [
+    "stream margin", "wildfire hazard", "wui", "wildland-urban interface",
+    "esa", "environmentally sensitive", "hallam bluff", "non attainment",
+    "tree preservation", "tree canopy", "agricultural buffer",
+    "conservation easement", "floodplain", "flood zone",
+    # Regional
+    "npdes buffer", "flood administration", "view corridor", "viewshed",
+    "water rights overlay", "dark sky", "ceqa overlay",
+]
+
+# Cluster F: Cadastral and Property Reference
+CLUSTER_F = [
+    "parcels", "parcel", "assessor parcels", "assessor parcel", "pid",
+    "tif parcels", "cfd parcels", "bmr parcels", "flood zone parcels",
+    "religious parcel", "building footprints landuse", "lot",
+    "parcel owner", "parcel report", "innovation parcel", "right of way",
+    "section township range", "address",
+]
+
+# Cluster G: Administrative Geography
+CLUSTER_G = [
+    "neighborhoods", "neighborhood", "neighborhood boundary",
+    "city limits", "wards", "council wards", "city boundary",
+    "municipal boundary", "sphere of influence",
+    "etj", "extraterritorial jurisdiction",
+    "township", "greenway",
+    "planning area",
+]
+
+# Cluster H: Regulatory Use Restrictions
+CLUSTER_H = [
+    "billboard buffer", "billboards exclusionary zone",
+    "outdoor lighting code", "short term rental", "prohibited area",
+    "resort hotels", "small cell wireless", "cell towers",
+    "scenic byway", "pedestrian mall", "gaming overlay", "gaming district",
+    "community residence", "symphony district", "alcohol buffer",
+    "adult use overlay", "cannabis overlay", "noise contour",
+    "military influence area",
+]
+
+# Combined flat list for simple keyword matching (backward compat)
+LAYER_KEYWORDS = (
+    CLUSTER_A + CLUSTER_B + CLUSTER_C + CLUSTER_D +
+    CLUSTER_E + CLUSTER_F + CLUSTER_G + CLUSTER_H
+)
+
+# ---------------------------------------------------------------------------
+# Exclusion Signals — High-Confidence Non-Planning Indicators
+# ---------------------------------------------------------------------------
+
+# Service path exclusion tokens
+EXCLUDE_SERVICE_TOKENS = [
+    "pw_", "scl", "rtc_", "bus_stops", "live_scl", "dpw", "publicworks",
+    "fd_", "phantoms", "fire_", "ems_",
+    "live_clv_bus", "clv_bus", "business_license",
+    "parks_protected", "pools_view", "community_centers_view",
+    "utilities", "water_", "sewer_", "storm_", "stormwater_",
+    "recycled_water", "lucity",
+    "ccsd_schools", "privateschools",
+    "police_", "mark43_",
+]
+
+# Layer name exclusion keywords
+EXCLUDE_LAYER_KEYWORDS = [
+    # Public Works / Transportation
+    "streets", "major streets", "bike trails", "bicycle lane", "bicycle route",
+    "equestrian trails", "trail crossing", "trailheads", "trail projects",
+    "trails network", "bus stops", "pavement condition", "pavement index",
+    "street sweeping", "guardrails", "handicap ramps", "street lights",
+    "traffic signal", "truck routes", "crossroads", "street centerlines",
+    "road closures",
+    # Fire / Emergency
+    "fire map", "phantoms", "emergency", "ems", "fire districts",
+    "fire pre plan", "fire run", "fire stations", "fire incidents",
+    "fire hydrants", "fire water points",
+    # Business License
+    "business licenses", "active business licenses",
+    "gaming restricted", "gaming non-restricted",
+    "alcohol on-premise", "alcohol off-premise",
+    "massage establishment", "marijuana establishments",
+    "daily labor service", "financial institution",
+    "amusement park", "open air vending",
+    "alcohol beverage control",
+    # Parks (standalone)
+    "pools", "community centers", "park lights", "park pathways",
+    "park points",
+    # Utilities
+    "water hydrant", "water meter", "water service", "sewer", "sanitary",
+    "storm drain", "recycled water", "irrigation controller",
+    "backflow", "odor sample",
+    # Schools (standalone)
+    "ccsd schools", "private schools", "school points",
+    # Police
+    "police beats", "police traffic citations", "crime",
+    "tiburon reporting districts",
+    # Transportation
+    "airports", "roads", "railroads",
+]
+
+# Raster/non-vector exclusion patterns
 EXCLUDE_PATTERNS = [
     re.compile(r"\b(raster|image|imagery|aerial|lidar|ortho|dem|elevation|hillshade|basemap|tile|cache)\b", re.IGNORECASE),
 ]
@@ -140,6 +335,90 @@ def fetch(url: str, timeout: int = REQUEST_TIMEOUT) -> Optional[requests.Respons
 
 
 # ---------------------------------------------------------------------------
+# URL validation
+# ---------------------------------------------------------------------------
+
+def validate_url(url: str, mode: str = "homepage") -> dict:
+    """
+    Validate a URL before starting a scan.
+    Returns dict with: valid (bool), message (str), status_code (int or None).
+    """
+    # Basic format check
+    parsed = urlparse(url)
+    if not parsed.scheme:
+        return {"valid": False, "message": "URL must start with http:// or https://",
+                "status_code": None}
+    if parsed.scheme not in ("http", "https"):
+        return {"valid": False, "message": f"Unsupported scheme '{parsed.scheme}'. Use http:// or https://",
+                "status_code": None}
+    if not parsed.netloc:
+        return {"valid": False, "message": "URL has no domain name.",
+                "status_code": None}
+
+    # For direct mode, check that URL looks like an ArcGIS REST endpoint
+    if mode == "direct":
+        if "/rest/services" not in url.lower():
+            return {"valid": False,
+                    "message": "For Direct mode, URL should contain '/rest/services' "
+                               "(e.g. https://gis.example.gov/arcgis/rest/services)",
+                    "status_code": None}
+
+    # Reachability check
+    try:
+        r = session.head(url, timeout=10, allow_redirects=True)
+        if r.status_code < 400:
+            return {"valid": True,
+                    "message": f"URL is reachable (HTTP {r.status_code}).",
+                    "status_code": r.status_code}
+        else:
+            return {"valid": False,
+                    "message": f"URL returned HTTP {r.status_code}.",
+                    "status_code": r.status_code}
+    except requests.ConnectionError:
+        return {"valid": False, "message": "Could not connect to the server. Check the URL and your network.",
+                "status_code": None}
+    except requests.Timeout:
+        return {"valid": False, "message": "Connection timed out. The server may be down.",
+                "status_code": None}
+    except requests.RequestException as e:
+        return {"valid": False, "message": f"Request failed: {e}",
+                "status_code": None}
+
+
+# ---------------------------------------------------------------------------
+# Interaction helper (for prompting user mid-scan)
+# ---------------------------------------------------------------------------
+
+class InteractionRequest:
+    """Allows the scanner to pause and ask the user a question."""
+
+    def __init__(self):
+        self._response_event = threading.Event()
+        self._response_value: Optional[str] = None
+
+    def ask(self, prompt_callback, question: str, options: list[str]) -> str:
+        """
+        Send a prompt to the user via the progress callback and block
+        until a response is received.
+        """
+        self._response_event.clear()
+        self._response_value = None
+        if prompt_callback:
+            prompt_callback("prompt", json.dumps({
+                "question": question,
+                "options": options,
+            }))
+        # Block until user responds (timeout after 5 minutes)
+        self._response_event.wait(timeout=300)
+        return self._response_value or options[0]  # default to first option
+
+    def respond(self, value: str):
+        """Called from the web layer when the user answers."""
+        self._response_value = value
+        self._response_event.set()
+
+
+# ---------------------------------------------------------------------------
 # Step 1 – Crawl government site to find ArcGIS REST endpoints
 # ---------------------------------------------------------------------------
 
@@ -157,12 +436,13 @@ def extract_arcgis_rest_urls(text: str) -> set[str]:
     return urls
 
 
-def crawl_for_arcgis(start_url: str) -> set[str]:
+def crawl_for_arcgis(start_url: str, interaction: InteractionRequest = None) -> set[str]:
     """
     Multi-step crawl:
       1. Scrape the start URL for ArcGIS links or GIS-related pages.
       2. Follow GIS-related pages one level deeper.
       3. Collect all ArcGIS REST Services Directory root URLs found.
+      4. If depth 3 exhausted with no results, prompt user for next step.
     """
     progress.log(f"Starting crawl at {start_url}")
     visited: set[str] = set()
@@ -170,6 +450,7 @@ def crawl_for_arcgis(start_url: str) -> set[str]:
     found_rest_urls: set[str] = set()
     base_domain = urlparse(start_url).netloc
     pages_crawled = 0
+    max_depth_reached = False
 
     while to_visit and pages_crawled < MAX_CRAWL_PAGES:
         url, depth = to_visit.pop(0)
@@ -178,8 +459,11 @@ def crawl_for_arcgis(start_url: str) -> set[str]:
         visited.add(url)
         pages_crawled += 1
 
+        progress.log(f"  Crawling (depth {depth}/{3}): {url[:80]}{'…' if len(url) > 80 else ''}")
+
         resp = fetch(url)
         if resp is None:
+            progress.log(f"    ✗ Could not reach page")
             continue
 
         text = resp.text
@@ -187,7 +471,7 @@ def crawl_for_arcgis(start_url: str) -> set[str]:
         # Check for ArcGIS REST URLs in the page body
         rest_urls = extract_arcgis_rest_urls(text)
         if rest_urls:
-            progress.log(f"  Found ArcGIS REST endpoint(s) on {url}")
+            progress.log(f"    ✓ Found ArcGIS REST endpoint(s) on this page")
             found_rest_urls.update(rest_urls)
 
         # If we haven't gone too deep, follow GIS-related links
@@ -214,9 +498,49 @@ def crawl_for_arcgis(start_url: str) -> set[str]:
                     if any(kw in href_lower for kw in GIS_LINK_KEYWORDS):
                         if full_url not in visited:
                             to_visit.append((full_url, depth + 1))
+        else:
+            max_depth_reached = True
 
     progress.stat("Pages crawled", pages_crawled)
     progress.stat("ArcGIS REST endpoints found", len(found_rest_urls))
+
+    # If we exhausted depth 3 with no results, prompt the user
+    if not found_rest_urls and max_depth_reached and interaction:
+        progress.log("Crawl reached maximum depth (3 levels) without finding ArcGIS REST endpoints.")
+        choice = interaction.ask(
+            progress._callback,
+            "The crawl reached 3 levels deep without finding ArcGIS REST endpoints. What would you like to do?",
+            [
+                "Try common URL patterns (auto-guess)",
+                "Enter a different URL",
+                "Stop scan",
+            ],
+        )
+        if choice == "Stop scan":
+            progress.log("User chose to stop the scan.")
+            return found_rest_urls
+        elif choice == "Enter a different URL":
+            progress.log("User chose to enter a different URL. Waiting for input…")
+            new_url = interaction.ask(
+                progress._callback,
+                "Enter a new URL to try (e.g. the ArcGIS REST services directory URL):",
+                [],  # free-text input
+            )
+            if new_url and new_url.strip():
+                new_url = new_url.strip()
+                progress.log(f"Trying user-provided URL: {new_url}")
+                rest_in_url = extract_arcgis_rest_urls(new_url)
+                if rest_in_url:
+                    found_rest_urls.update(rest_in_url)
+                else:
+                    # Treat the whole URL as a potential REST directory
+                    found_rest_urls.add(new_url)
+            return found_rest_urls
+        else:
+            # Default: try guessing
+            progress.log("Trying common ArcGIS URL patterns…")
+            found_rest_urls = guess_arcgis_urls(start_url)
+            return found_rest_urls
 
     if not found_rest_urls:
         progress.log("No ArcGIS REST endpoints discovered via crawl – trying common URL patterns")
@@ -352,51 +676,173 @@ def query_rest_services(rest_url: str) -> list[dict]:
 # Step 3 – Filter layers
 # ---------------------------------------------------------------------------
 
-def is_excluded(layer_name: str) -> bool:
+def is_excluded_by_pattern(layer_name: str) -> bool:
+    """Check raster/imagery exclusion patterns."""
     for pat in EXCLUDE_PATTERNS:
         if pat.search(layer_name):
             return True
     return False
 
 
-def matches_service_keywords(service_name: str) -> bool:
-    sn = service_name.lower()
-    return any(kw in sn for kw in SERVICE_KEYWORDS)
+def score_service_path(service_name: str) -> int:
+    """
+    Tier 1 scoring: score based on service/folder path tokens.
+    +5 for department identifiers, +4 for land use tokens, +3 for development tokens.
+    -5 for exclusion service tokens.
+    """
+    sn = service_name.lower().replace("/", " ").replace("_", " ").replace("-", " ")
+    sn_raw = service_name.lower()
+    score = 0
+
+    # Check exclusion service tokens first
+    for token in EXCLUDE_SERVICE_TOKENS:
+        if token in sn_raw:
+            score -= 5
+            return score  # strong negative, bail early
+
+    # Department identifiers (+5)
+    for token in TIER1_DEPARTMENT_TOKENS:
+        if token in sn_raw:
+            score = max(score, 5)
+            break
+
+    # Land use / zoning tokens (+4)
+    if score < 4:
+        for token in TIER1_LANDUSE_TOKENS:
+            if token in sn_raw:
+                score = max(score, 4)
+                break
+
+    # Development tokens (+3)
+    if score < 3:
+        for token in TIER1_DEVELOPMENT_TOKENS:
+            if token in sn_raw:
+                score = max(score, 3)
+                break
+
+    return score
 
 
-def matches_layer_keywords(layer_name: str) -> bool:
+def _count_cluster_hits(text: str, cluster: list[str]) -> int:
+    """Count how many keywords from a cluster match in the text."""
+    text_lower = text.lower()
+    return sum(1 for kw in cluster if kw in text_lower)
+
+
+def score_layer_name(layer_name: str) -> int:
+    """
+    Tier 2 scoring: score based on layer name keyword clusters.
+    +3 for 3+ keywords from a single cluster, +2 for 1-2 keywords from A-F,
+    +1 for administrative geography (Cluster G).
+    Negative for exclusion keywords.
+    """
     ln = layer_name.lower()
-    return any(kw in ln for kw in LAYER_KEYWORDS)
+
+    # Check exclusion keywords
+    for kw in EXCLUDE_LAYER_KEYWORDS:
+        if kw in ln:
+            # Check if it's a standalone match (not nested in a planning term)
+            # e.g. "parks" standalone vs "parks master plan"
+            has_planning_context = any(pk in ln for pk in [
+                "plan", "zone", "zoning", "land use", "overlay", "district",
+                "parcel", "subdivision", "historic",
+            ])
+            if not has_planning_context:
+                return -4  # strong negative
+
+    score = 0
+
+    # Score each cluster
+    clusters_af = [
+        (CLUSTER_A, "A"), (CLUSTER_B, "B"), (CLUSTER_C, "C"),
+        (CLUSTER_D, "D"), (CLUSTER_E, "E"), (CLUSTER_F, "F"),
+    ]
+    max_hits = 0
+    total_hits_af = 0
+    for cluster, name in clusters_af:
+        hits = _count_cluster_hits(ln, cluster)
+        max_hits = max(max_hits, hits)
+        total_hits_af += hits
+
+    if max_hits >= 3:
+        score = max(score, 3)
+    elif total_hits_af >= 1:
+        score = max(score, 2)
+
+    # Cluster G (administrative geography) — lower confidence
+    g_hits = _count_cluster_hits(ln, CLUSTER_G)
+    if g_hits > 0 and score == 0:
+        score = 1
+
+    # Cluster H (regulatory use restrictions) — moderate confidence
+    h_hits = _count_cluster_hits(ln, CLUSTER_H)
+    if h_hits > 0:
+        score = max(score, 2)
+
+    return score
+
+
+def compute_confidence_score(layer: dict) -> int:
+    """
+    Full confidence score for a layer combining Tier 1 and Tier 2 signals.
+    Score >= 4: high confidence, include
+    Score 2-3: moderate confidence, include
+    Score 0-1: ambiguous
+    Score <= -1: exclude
+    """
+    svc_score = score_service_path(layer["service_name"])
+    lyr_score = score_layer_name(layer["layer_name"])
+    return svc_score + lyr_score
 
 
 def filter_layers(layers: list[dict]) -> list[dict]:
-    """Keep only planning/development-related feature layers, excluding rasters etc."""
-    progress.log("Filtering layers by planning/development keywords…")
+    """
+    Filter layers using the 3-tier confidence scoring model.
+    Includes layers with score >= 2, excludes rasters and low-confidence layers.
+    """
+    progress.log("Filtering layers using confidence scoring model…")
 
-    # Separate into priority buckets
-    priority_layers = []  # in a planning/dev service AND matches layer keywords
-    secondary_layers = []  # matches layer keywords but service name doesn't match
+    scored_layers = []
+    excluded_count = 0
+    ambiguous_count = 0
 
     for lyr in layers:
-        if is_excluded(lyr["layer_name"]):
+        # Raster/imagery exclusion
+        if is_excluded_by_pattern(lyr["layer_name"]):
+            excluded_count += 1
             continue
 
-        svc_match = matches_service_keywords(lyr["service_name"])
-        lyr_match = matches_layer_keywords(lyr["layer_name"])
+        score = compute_confidence_score(lyr)
+        lyr["confidence_score"] = score
 
-        if lyr_match:
-            if svc_match:
-                lyr["priority"] = 1
-                priority_layers.append(lyr)
-            else:
-                lyr["priority"] = 2
-                secondary_layers.append(lyr)
+        if score >= 4:
+            lyr["priority"] = 1  # high confidence
+            scored_layers.append(lyr)
+        elif score >= 2:
+            lyr["priority"] = 2  # moderate confidence
+            scored_layers.append(lyr)
+        elif score >= 0:
+            ambiguous_count += 1
+            # Ambiguous — only include if in a planning-named service
+            if score_service_path(lyr["service_name"]) >= 3:
+                lyr["priority"] = 3
+                scored_layers.append(lyr)
+        else:
+            excluded_count += 1
 
-    result = priority_layers + secondary_layers
-    progress.log(f"  {len(priority_layers)} layers in planning/dev services, "
-                 f"{len(secondary_layers)} in other services")
-    progress.stat("Layers after keyword filter", len(result))
-    return result
+    # Sort by priority then score descending
+    scored_layers.sort(key=lambda x: (x.get("priority", 99),
+                                       -x.get("confidence_score", 0)))
+
+    high = sum(1 for l in scored_layers if l.get("priority") == 1)
+    moderate = sum(1 for l in scored_layers if l.get("priority") == 2)
+    low = sum(1 for l in scored_layers if l.get("priority") == 3)
+
+    progress.log(f"  {high} high-confidence, {moderate} moderate-confidence, "
+                 f"{low} context-included layers")
+    progress.log(f"  {excluded_count} excluded, {ambiguous_count} ambiguous")
+    progress.stat("Layers after keyword filter", len(scored_layers))
+    return scored_layers
 
 
 # ---------------------------------------------------------------------------
@@ -531,9 +977,9 @@ def write_excel(layers: list[dict], output_path: str):
 # ---------------------------------------------------------------------------
 
 def scan(website_url: str, output_dir: str = ".", progress_callback=None,
-         mode: str = "homepage") -> dict:
+         mode: str = "homepage", interaction: InteractionRequest = None) -> dict:
     """
-    Full pipeline: crawl → enumerate → filter → deduplicate → export.
+    Full pipeline: validate → crawl → enumerate → filter → deduplicate → export.
 
     Args:
         website_url: Root URL of the government website (or REST directory / GIS page).
@@ -543,6 +989,7 @@ def scan(website_url: str, output_dir: str = ".", progress_callback=None,
             "direct"   – URL is an ArcGIS REST Services Directory root (Path A).
             "homepage" – URL is the jurisdiction's main website (Path B).
             "gis_page" – URL is a GIS department / resources page (Path B).
+        interaction: Optional InteractionRequest for mid-scan user prompts.
 
     Returns:
         dict with keys: xl_path, md_path, stats, error (if any).
@@ -552,6 +999,19 @@ def scan(website_url: str, output_dir: str = ".", progress_callback=None,
     print("\n" + "=" * 60)
     print("  Government ArcGIS Feature Layer Scanner")
     print("=" * 60 + "\n")
+
+    # Step 0 – Validate URL
+    progress.log(f"Validating URL: {website_url}")
+    validation = validate_url(website_url, mode=mode)
+    if validation["valid"]:
+        progress.log(f"✓ URL is valid and reachable — {validation['message']}")
+    else:
+        progress.log(f"✗ URL validation failed — {validation['message']}")
+        if progress_callback:
+            progress_callback("error_msg", f"URL validation failed: {validation['message']}")
+        progress.summary()
+        return {"error": f"URL validation failed: {validation['message']}",
+                "stats": dict(progress.stats)}
 
     # Step 1 – find ArcGIS REST endpoints (skipped for "direct" mode)
     if mode == "direct":
@@ -567,7 +1027,7 @@ def scan(website_url: str, output_dir: str = ".", progress_callback=None,
         # Path B: crawl from homepage (mode="homepage") or GIS page (mode="gis_page")
         label = "GIS department page" if mode == "gis_page" else "jurisdiction homepage"
         progress.log(f"Crawl mode: starting from {label}")
-        rest_urls = crawl_for_arcgis(website_url)
+        rest_urls = crawl_for_arcgis(website_url, interaction=interaction)
 
     if not rest_urls:
         progress.log("ERROR: Could not discover any ArcGIS REST Services Directory.")

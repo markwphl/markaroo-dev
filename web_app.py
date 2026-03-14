@@ -23,7 +23,7 @@ from html import escape
 
 from flask import Flask, Response, jsonify, render_template_string, request, send_file
 
-from gov_arcgis_scanner import scan
+from gov_arcgis_scanner import scan, validate_url, InteractionRequest
 
 # ---------------------------------------------------------------------------
 # App setup
@@ -190,7 +190,7 @@ INDEX_HTML = r"""
     align-items: center;
     gap: .75rem;
   }
-  .input-row input[type="url"] {
+  .input-row input[type="text"] {
     flex: 1;
     border: none;
     outline: none;
@@ -201,7 +201,7 @@ INDEX_HTML = r"""
     padding: .5rem .75rem;
     border-radius: .5rem;
   }
-  .input-row input[type="url"]::placeholder { color: var(--text-muted); }
+  .input-row input[type="text"]::placeholder { color: var(--text-muted); }
   .btn-submit {
     width: 38px; height: 38px;
     border-radius: 50%;
@@ -226,6 +226,17 @@ INDEX_HTML = r"""
     margin-top: .5rem;
     margin-bottom: 2rem;
   }
+
+  /* ---- URL validation feedback ---- */
+  #url-feedback {
+    font-size: .78rem;
+    margin-top: .4rem;
+    min-height: 1.2em;
+    transition: color .2s;
+  }
+  #url-feedback.valid { color: var(--green); }
+  #url-feedback.invalid { color: var(--red); }
+  #url-feedback.checking { color: var(--amber); }
 
   /* ---- Radio group ---- */
   .radio-group {
@@ -315,7 +326,7 @@ INDEX_HTML = r"""
     display: none;
     width: 100%;
     max-width: 680px;
-    max-height: 280px;
+    max-height: 340px;
     overflow-y: auto;
     background: var(--surface);
     border: 1px solid var(--border-light);
@@ -329,6 +340,78 @@ INDEX_HTML = r"""
   #progress-box .stat { color: var(--amber); font-weight: 500; }
   #progress-box .error { color: var(--red); }
   #progress-box .done { color: var(--green); font-weight: 600; }
+
+  /* ---- Prompt dialog (for user interaction mid-scan) ---- */
+  #prompt-overlay {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,.45);
+    z-index: 100;
+    align-items: center;
+    justify-content: center;
+  }
+  #prompt-overlay.visible { display: flex; }
+  .prompt-dialog {
+    background: var(--surface);
+    border-radius: 1rem;
+    padding: 1.5rem 2rem;
+    max-width: 500px;
+    width: 90%;
+    box-shadow: 0 8px 32px rgba(0,0,0,.18);
+  }
+  .prompt-dialog h3 {
+    font-size: .95rem;
+    font-weight: 600;
+    color: var(--text);
+    margin-bottom: 1rem;
+    line-height: 1.4;
+  }
+  .prompt-dialog .prompt-options {
+    display: flex;
+    flex-direction: column;
+    gap: .5rem;
+    margin-bottom: .75rem;
+  }
+  .prompt-dialog .prompt-option {
+    padding: .6rem 1rem;
+    background: var(--surface-alt);
+    border: 1px solid var(--border-light);
+    border-radius: .6rem;
+    font-family: inherit;
+    font-size: .85rem;
+    color: var(--text);
+    cursor: pointer;
+    transition: background .12s, border-color .12s;
+    text-align: left;
+    width: 100%;
+  }
+  .prompt-dialog .prompt-option:hover { background: var(--accent-light); border-color: var(--accent); }
+  .prompt-dialog .prompt-input-row {
+    display: none;
+    gap: .5rem;
+    margin-top: .5rem;
+  }
+  .prompt-dialog .prompt-input-row.visible { display: flex; }
+  .prompt-dialog .prompt-input-row input {
+    flex: 1;
+    padding: .5rem .75rem;
+    border: 1px solid var(--border);
+    border-radius: .5rem;
+    font-family: inherit;
+    font-size: .85rem;
+    outline: none;
+  }
+  .prompt-dialog .prompt-input-row button {
+    padding: .5rem 1rem;
+    background: var(--accent);
+    color: #fff;
+    border: none;
+    border-radius: .5rem;
+    font-family: inherit;
+    font-size: .85rem;
+    cursor: pointer;
+  }
 
   /* ---- Summary ---- */
   #summary {
@@ -344,6 +427,30 @@ INDEX_HTML = r"""
     text-transform: uppercase;
     letter-spacing: .05em;
     margin-bottom: .5rem;
+  }
+  .summary-cards {
+    display: flex;
+    gap: .75rem;
+    flex-wrap: wrap;
+    margin-bottom: 1rem;
+  }
+  .summary-card {
+    flex: 1 1 120px;
+    background: var(--surface);
+    border: 1px solid var(--border-light);
+    border-radius: .75rem;
+    padding: .75rem 1rem;
+    text-align: center;
+  }
+  .summary-card .value {
+    font-size: 1.5rem;
+    font-weight: 700;
+    color: var(--accent);
+  }
+  .summary-card .label {
+    font-size: .72rem;
+    color: var(--text-muted);
+    margin-top: .2rem;
   }
   #summary table { width: 100%; border-collapse: collapse; }
   #summary th, #summary td {
@@ -361,6 +468,19 @@ INDEX_HTML = r"""
     width: 100%;
     max-width: 680px;
     margin-bottom: 1.25rem;
+  }
+  #downloads h3 {
+    font-size: .8rem;
+    font-weight: 600;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: .05em;
+    margin-bottom: .5rem;
+  }
+  #downloads .download-note {
+    font-size: .75rem;
+    color: var(--text-muted);
+    margin-bottom: .75rem;
   }
   .btn-download {
     display: inline-flex;
@@ -430,34 +550,6 @@ INDEX_HTML = r"""
   #results-table tr:hover td { background: var(--surface-alt); }
   #results-table td:nth-child(4) { font-family: 'SF Mono', 'Cascadia Code', monospace; font-size: .72rem; color: var(--text-secondary); }
 
-  /* ---- Quick-action cards (bottom) ---- */
-  .quick-actions {
-    display: none;
-    width: 100%;
-    max-width: 680px;
-    gap: .6rem;
-    flex-wrap: wrap;
-  }
-  .quick-actions.visible { display: flex; }
-  .action-card {
-    flex: 1 1 calc(50% - .3rem);
-    min-width: 200px;
-    background: var(--surface);
-    border: 1px solid var(--border-light);
-    border-radius: .6rem;
-    padding: .65rem 1rem;
-    font-family: inherit;
-    font-size: .85rem;
-    color: var(--text-secondary);
-    cursor: pointer;
-    transition: background .12s, border-color .12s;
-    text-align: left;
-    border-bottom: none;
-    display: block;
-    text-decoration: none;
-  }
-  .action-card:hover { background: var(--surface-alt); border-color: var(--accent); color: var(--text); }
-
   /* ---- Responsive ---- */
   @media (max-width: 800px) {
     .sidebar { display: none; }
@@ -522,13 +614,14 @@ INDEX_HTML = r"""
     </div>
 
     <form id="scan-form" class="input-row">
-      <input id="url-input" type="url" name="url" required
-             placeholder="Insert web address here"
+      <input id="url-input" type="text" name="url" required
+             placeholder="https://example.gov/arcgis/rest/services"
              autocomplete="url">
       <button type="submit" class="btn-submit" id="scan-btn" title="Start scan">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>
       </button>
     </form>
+    <div id="url-feedback"></div>
   </div>
   <p class="hint" id="hint-text">The tool finds GIS layers from the client's published directory of ArcGIS REST services (API endpoints). Only GIS layers found to be applicable to the Planning knowledge domain are enumerated (with effort to remove duplicates) and output to a table. Double check this list with your client for the correct feature layers and endpoint URLs.</p>
 
@@ -549,12 +642,25 @@ INDEX_HTML = r"""
 
   <div id="summary">
     <h3>Scan Statistics</h3>
+    <div id="summary-cards" class="summary-cards"></div>
     <table><tbody id="summary-body"></tbody></table>
   </div>
 
   <div id="downloads"></div>
 
 </main>
+
+<!-- ====== Prompt overlay (for mid-scan user interaction) ====== -->
+<div id="prompt-overlay">
+  <div class="prompt-dialog">
+    <h3 id="prompt-question"></h3>
+    <div class="prompt-options" id="prompt-options"></div>
+    <div class="prompt-input-row" id="prompt-input-row">
+      <input type="text" id="prompt-text-input" placeholder="Enter URL...">
+      <button id="prompt-text-submit">Submit</button>
+    </div>
+  </div>
+</div>
 
 <script>
 const form = document.getElementById('scan-form');
@@ -563,24 +669,36 @@ const box = document.getElementById('progress-box');
 const statusLine = document.getElementById('status-line');
 const summaryDiv = document.getElementById('summary');
 const summaryBody = document.getElementById('summary-body');
+const summaryCards = document.getElementById('summary-cards');
 const downloadsDiv = document.getElementById('downloads');
 const resultsDiv = document.getElementById('results-table');
 const tabs = document.getElementById('tabs');
+const urlFeedback = document.getElementById('url-feedback');
 
 const hintEl = document.getElementById('hint-text');
 const modeGroup = document.getElementById('mode-group');
 
+// Prompt dialog elements
+const promptOverlay = document.getElementById('prompt-overlay');
+const promptQuestion = document.getElementById('prompt-question');
+const promptOptions = document.getElementById('prompt-options');
+const promptInputRow = document.getElementById('prompt-input-row');
+const promptTextInput = document.getElementById('prompt-text-input');
+const promptTextSubmit = document.getElementById('prompt-text-submit');
+
+let currentJobId = null;
+
 const MODE_CONFIG = {
   direct: {
-    placeholder: 'Insert web address here',
-    hint: 'The tool finds GIS layers from the client's published directory of ArcGIS REST services (API endpoints). Only GIS layers found to be applicable to the Planning knowledge domain are enumerated (with effort to remove duplicates) and output to a table. Double check this list with your client for the correct feature layers and endpoint URLs.'
+    placeholder: 'https://gis.example.gov/arcgis/rest/services',
+    hint: 'The tool finds GIS layers from the client\'s published directory of ArcGIS REST services (API endpoints). Only GIS layers found to be applicable to the Planning knowledge domain are enumerated (with effort to remove duplicates) and output to a table. Double check this list with your client for the correct feature layers and endpoint URLs.'
   },
   homepage: {
-    placeholder: 'Insert web address here',
-    hint: 'Crawls the jurisdiction website to discover ArcGIS REST endpoints.'
+    placeholder: 'https://www.example.gov',
+    hint: 'Crawls the jurisdiction website to discover ArcGIS REST endpoints. Will follow GIS-related links up to 3 levels deep.'
   },
   gis_page: {
-    placeholder: 'Insert web address here',
+    placeholder: 'https://www.example.gov/gis',
     hint: 'Scans the GIS department page for ArcGIS REST endpoint links.'
   }
 };
@@ -596,15 +714,12 @@ modeGroup.addEventListener('change', (e) => {
   const cfg = MODE_CONFIG[mode];
   document.getElementById('url-input').placeholder = cfg.placeholder;
   hintEl.textContent = cfg.hint;
+  urlFeedback.textContent = '';
+  urlFeedback.className = '';
   // Highlight selected label
   modeGroup.querySelectorAll('label').forEach(l => l.classList.remove('selected'));
   e.target.closest('label').classList.add('selected');
 });
-
-function prefill(url) {
-  document.getElementById('url-input').value = url;
-  document.getElementById('url-input').focus();
-}
 
 function showPanel(name) { /* placeholder for sidebar navigation */ }
 
@@ -617,14 +732,122 @@ function switchTab(el) {
   summaryDiv.style.display = t === 'summary' ? 'block' : 'none';
 }
 
+// --- URL validation on blur ---
+let validateTimeout = null;
+document.getElementById('url-input').addEventListener('blur', () => {
+  const url = document.getElementById('url-input').value.trim();
+  if (!url) { urlFeedback.textContent = ''; urlFeedback.className = ''; return; }
+  validateUrlField(url);
+});
+document.getElementById('url-input').addEventListener('input', () => {
+  // Clear previous validation when typing
+  urlFeedback.textContent = '';
+  urlFeedback.className = '';
+});
+
+async function validateUrlField(url) {
+  // Quick client-side check
+  if (!url.startsWith('http://') && !url.startsWith('https://')) {
+    urlFeedback.textContent = 'URL must start with http:// or https://';
+    urlFeedback.className = 'invalid';
+    return false;
+  }
+  urlFeedback.innerHTML = '<span class="spinner"></span> Checking URL...';
+  urlFeedback.className = 'checking';
+  try {
+    const mode = getSelectedMode();
+    const res = await fetch('/api/validate', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({url, mode})
+    });
+    const data = await res.json();
+    if (data.valid) {
+      urlFeedback.textContent = data.message;
+      urlFeedback.className = 'valid';
+      return true;
+    } else {
+      urlFeedback.textContent = data.message;
+      urlFeedback.className = 'invalid';
+      return false;
+    }
+  } catch (err) {
+    urlFeedback.textContent = 'Could not validate URL (server unreachable).';
+    urlFeedback.className = 'invalid';
+    return false;
+  }
+}
+
+// --- Prompt dialog handler ---
+function showPrompt(jobId, question, options) {
+  currentJobId = jobId;
+  promptQuestion.textContent = question;
+  promptOptions.innerHTML = '';
+  promptInputRow.classList.remove('visible');
+
+  if (options && options.length > 0) {
+    // Show option buttons
+    options.forEach(opt => {
+      const b = document.createElement('button');
+      b.className = 'prompt-option';
+      b.textContent = opt;
+      b.onclick = () => sendPromptResponse(jobId, opt);
+      promptOptions.appendChild(b);
+    });
+  } else {
+    // Free-text input
+    promptInputRow.classList.add('visible');
+    promptTextInput.value = '';
+    promptTextInput.focus();
+  }
+  promptOverlay.classList.add('visible');
+}
+
+function hidePrompt() {
+  promptOverlay.classList.remove('visible');
+}
+
+promptTextSubmit.onclick = () => {
+  const val = promptTextInput.value.trim();
+  if (val && currentJobId) {
+    sendPromptResponse(currentJobId, val);
+  }
+};
+promptTextInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') {
+    promptTextSubmit.click();
+  }
+});
+
+async function sendPromptResponse(jobId, response) {
+  hidePrompt();
+  addLine('log', 'Your response: ' + response);
+  try {
+    await fetch(`/api/respond/${jobId}`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({response})
+    });
+  } catch (err) {
+    addLine('error', 'Failed to send response to server.');
+  }
+}
+
+// --- Main form submit ---
 form.addEventListener('submit', async (e) => {
   e.preventDefault();
-  const url = document.getElementById('url-input').value.trim();
+  let url = document.getElementById('url-input').value.trim();
   if (!url) return;
+
+  // Auto-prepend https:// if missing
+  if (!url.startsWith('http://') && !url.startsWith('https://')) {
+    url = 'https://' + url;
+    document.getElementById('url-input').value = url;
+  }
 
   // Reset UI
   box.innerHTML = ''; box.style.display = 'block';
-  summaryDiv.style.display = 'none'; summaryBody.innerHTML = '';
+  summaryDiv.style.display = 'none'; summaryBody.innerHTML = ''; summaryCards.innerHTML = '';
   downloadsDiv.style.display = 'none'; downloadsDiv.innerHTML = '';
   resultsDiv.style.display = 'none'; resultsDiv.innerHTML = '';
   tabs.classList.add('visible');
@@ -632,7 +855,8 @@ form.addEventListener('submit', async (e) => {
   document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
   document.querySelector('.tab-btn[data-tab="progress"]').classList.add('active');
   btn.disabled = true;
-  statusLine.innerHTML = '<span class="spinner"></span> Scanning&hellip;';
+  statusLine.innerHTML = '<span class="spinner"></span> Validating URL&hellip;';
+  addLine('log', 'Starting scan for: ' + url);
 
   // Start scan
   const mode = getSelectedMode();
@@ -645,6 +869,7 @@ form.addEventListener('submit', async (e) => {
     });
   } catch (err) {
     statusLine.textContent = 'Network error \u2013 could not reach server.';
+    addLine('error', 'Network error: could not reach the server. Is it running?');
     btn.disabled = false;
     return;
   }
@@ -656,16 +881,47 @@ form.addEventListener('submit', async (e) => {
     return;
   }
 
+  currentJobId = job_id;
+  statusLine.innerHTML = '<span class="spinner"></span> Scanning&hellip;';
+
   // SSE progress stream
   const evtSource = new EventSource(`/api/progress/${job_id}`);
 
-  evtSource.addEventListener('log', (e) => { addLine('log', e.data); });
+  evtSource.addEventListener('log', (e) => {
+    addLine('log', e.data);
+    // Update status line with latest log
+    statusLine.innerHTML = '<span class="spinner"></span> ' + esc(e.data.substring(0, 80));
+  });
   evtSource.addEventListener('stat', (e) => { addLine('stat', e.data); });
-  evtSource.addEventListener('error_msg', (e) => { addLine('error', e.data); });
+  evtSource.addEventListener('error_msg', (e) => {
+    addLine('error', e.data);
+    statusLine.innerHTML = '<span style="color:var(--red);">&#10007;</span> ' + esc(e.data.substring(0, 80));
+  });
+
+  // Handle prompt events (mid-scan user interaction)
+  evtSource.addEventListener('prompt', (e) => {
+    const data = JSON.parse(e.data);
+    showPrompt(job_id, data.question, data.options || []);
+  });
 
   evtSource.addEventListener('summary', (e) => {
     const stats = JSON.parse(e.data);
     summaryBody.innerHTML = '';
+    summaryCards.innerHTML = '';
+
+    // Build summary cards for key stats
+    const cardKeys = ['ArcGIS REST endpoints found', 'Total feature layers enumerated',
+                      'Layers after keyword filter', 'Final layers exported'];
+    for (const k of cardKeys) {
+      if (stats[k] !== undefined) {
+        const card = document.createElement('div');
+        card.className = 'summary-card';
+        card.innerHTML = `<div class="value">${esc(String(stats[k]))}</div><div class="label">${esc(k)}</div>`;
+        summaryCards.appendChild(card);
+      }
+    }
+
+    // Full stats table
     for (const [k, v] of Object.entries(stats)) {
       const tr = document.createElement('tr');
       tr.innerHTML = `<th>${esc(k)}</th><td>${esc(String(v))}</td>`;
@@ -676,27 +932,33 @@ form.addEventListener('submit', async (e) => {
   evtSource.addEventListener('done', (e) => {
     evtSource.close();
     const data = JSON.parse(e.data);
-    statusLine.innerHTML = '<span style="color:var(--green);">&#10003;</span> Scan complete';
     btn.disabled = false;
 
     if (data.error) {
+      statusLine.innerHTML = '<span style="color:var(--red);">&#10007;</span> Scan failed';
       addLine('error', data.error);
       return;
     }
 
-    // Download links
-    downloadsDiv.innerHTML = '';
+    const layerCount = (data.layers && data.layers.length) || 0;
+    statusLine.innerHTML = '<span style="color:var(--green);">&#10003;</span> Scan complete &mdash; ' + layerCount + ' layers found';
+    addLine('done', 'Scan complete! Found ' + layerCount + ' planning-related feature layers.');
+
+    // Download section with instructions
+    let dlHtml = '<h3>Download Results</h3>';
+    dlHtml += '<p class="download-note">Click a button below to save the file. Your browser will prompt you to choose a download location.</p>';
     if (data.xl_file) {
-      downloadsDiv.innerHTML += `<a class="btn-download" href="/api/download/${job_id}/xlsx"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>Excel (.xlsx)</a>`;
+      dlHtml += `<a class="btn-download" href="/api/download/${job_id}/xlsx" download><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>Save as Excel (.xlsx)</a>`;
     }
     if (data.md_file) {
-      downloadsDiv.innerHTML += `<a class="btn-download" href="/api/download/${job_id}/md"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>Markdown (.md)</a>`;
+      dlHtml += `<a class="btn-download" href="/api/download/${job_id}/md" download><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>Save as Markdown (.md)</a>`;
     }
+    downloadsDiv.innerHTML = dlHtml;
     downloadsDiv.style.display = 'block';
 
     // Build preview table
     if (data.layers && data.layers.length) {
-      let html = '<h3>Results Preview</h3>';
+      let html = '<h3>Results Preview (' + layerCount + ' layers)</h3>';
       html += '<div class="table-scroll">';
       html += '<table><thead><tr><th>GIS Layer Name</th><th>Source System</th><th>Collection</th><th>API Endpoint</th><th>Time Period</th><th>Update Freq.</th></tr></thead><tbody>';
       data.layers.forEach(l => {
@@ -706,18 +968,28 @@ form.addEventListener('submit', async (e) => {
       resultsDiv.innerHTML = html;
     }
 
-    // Auto-switch to results tab
+    // Auto-switch to results tab if we have results, otherwise summary
     document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
-    document.querySelector('.tab-btn[data-tab="results"]').classList.add('active');
-    box.style.display = 'none';
-    resultsDiv.style.display = 'block';
-    summaryDiv.style.display = 'none';
+    if (data.layers && data.layers.length) {
+      document.querySelector('.tab-btn[data-tab="results"]').classList.add('active');
+      box.style.display = 'none';
+      resultsDiv.style.display = 'block';
+      summaryDiv.style.display = 'none';
+    } else {
+      document.querySelector('.tab-btn[data-tab="summary"]').classList.add('active');
+      box.style.display = 'none';
+      resultsDiv.style.display = 'none';
+      summaryDiv.style.display = 'block';
+    }
   });
 
   evtSource.onerror = () => {
     evtSource.close();
-    statusLine.textContent = 'Connection lost.';
-    btn.disabled = false;
+    if (btn.disabled) {
+      statusLine.textContent = 'Connection to server lost.';
+      addLine('error', 'Lost connection to the server. The scan may still be running on the backend.');
+      btn.disabled = false;
+    }
   };
 });
 
@@ -749,6 +1021,18 @@ def index():
     return render_template_string(INDEX_HTML)
 
 
+@app.route("/api/validate", methods=["POST"])
+def api_validate():
+    """Pre-validate a URL before starting a scan."""
+    data = request.get_json(force=True)
+    url = (data.get("url") or "").strip()
+    mode = (data.get("mode") or "homepage").strip()
+    if not url:
+        return jsonify({"valid": False, "message": "URL is required."})
+    result = validate_url(url, mode=mode)
+    return jsonify(result)
+
+
 @app.route("/api/scan", methods=["POST"])
 def api_scan():
     data = request.get_json(force=True)
@@ -761,7 +1045,9 @@ def api_scan():
 
     job_id = uuid.uuid4().hex[:12]
     q: queue.Queue = queue.Queue()
-    _jobs[job_id] = {"queue": q, "result": None, "status": "running"}
+    interaction = InteractionRequest()
+    _jobs[job_id] = {"queue": q, "result": None, "status": "running",
+                     "interaction": interaction}
 
     def progress_cb(event_type: str, message: str):
         q.put((event_type, message))
@@ -770,7 +1056,7 @@ def api_scan():
         try:
             job_output_dir = os.path.join(OUTPUT_DIR, job_id)
             result = scan(url, output_dir=job_output_dir, progress_callback=progress_cb,
-                          mode=mode)
+                          mode=mode, interaction=interaction)
             _jobs[job_id]["result"] = result
             _jobs[job_id]["status"] = "done"
             q.put(("done", json.dumps({
@@ -786,6 +1072,21 @@ def api_scan():
 
     threading.Thread(target=run, daemon=True).start()
     return jsonify({"job_id": job_id})
+
+
+@app.route("/api/respond/<job_id>", methods=["POST"])
+def api_respond(job_id):
+    """Handle user response to a mid-scan prompt."""
+    job = _jobs.get(job_id)
+    if not job:
+        return jsonify({"error": "Job not found"}), 404
+    interaction = job.get("interaction")
+    if not interaction:
+        return jsonify({"error": "No interaction pending"}), 400
+    data = request.get_json(force=True)
+    response = (data.get("response") or "").strip()
+    interaction.respond(response)
+    return jsonify({"ok": True})
 
 
 @app.route("/api/progress/<job_id>")
