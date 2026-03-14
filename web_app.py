@@ -530,7 +530,7 @@ INDEX_HTML = r"""
       </button>
     </form>
   </div>
-  <p class="hint" id="hint-text">Enumerates feature layers from the ArcGIS REST services directory.</p>
+  <p class="hint" id="hint-text">The tool finds GIS layers from the client's published directory of ArcGIS REST services (API endpoints). Only GIS layers found to be applicable to the Planning knowledge domain are enumerated (with effort to remove duplicates) and output to a table. Double check this list with your client for the correct feature layers and endpoint URLs.</p>
 
   <!-- Status -->
   <div id="status-line"></div>
@@ -573,7 +573,7 @@ const modeGroup = document.getElementById('mode-group');
 const MODE_CONFIG = {
   direct: {
     placeholder: 'Insert web address here',
-    hint: 'Enumerates feature layers from the ArcGIS REST services directory.'
+    hint: 'The tool finds GIS layers from the client's published directory of ArcGIS REST services (API endpoints). Only GIS layers found to be applicable to the Planning knowledge domain are enumerated (with effort to remove duplicates) and output to a table. Double check this list with your client for the correct feature layers and endpoint URLs.'
   },
   homepage: {
     placeholder: 'Insert web address here',
