@@ -612,13 +612,6 @@ INDEX_HTML = r"""
       </label>
     </div>
 
-    <div id="search-terms-config" style="display:none; margin-bottom:.75rem;">
-      <label style="font-size:.75rem; font-weight:600; color:var(--text-secondary); display:block; margin-bottom:.3rem;">
-        Page Search Terms <span style="font-weight:400; color:var(--text-muted);">(crawl will prioritize pages matching these terms in the title or URL)</span>
-      </label>
-      <textarea id="search-terms" rows="3" style="width:100%; font-family:inherit; font-size:.78rem; border:1px solid var(--border-light); border-radius:.5rem; padding:.5rem .75rem; resize:vertical; background:var(--surface-alt); color:var(--text);">Planning, Zoning, Planning Commission, Development, Community Development, ZBA, Assessor, Assessments, Open Data, GIS, Geographic Information Systems, Maps, Citymap, Cityview, Countyview, Countymap, ZoningMap, PlanningMap</textarea>
-    </div>
-
     <form id="scan-form" class="input-row">
       <input id="url-input" type="text" name="url" required
              placeholder="https://example.gov/arcgis/rest/services"
@@ -746,8 +739,6 @@ modeGroup.addEventListener('change', (e) => {
   hintEl.innerHTML = cfg.hint;
   urlFeedback.textContent = '';
   urlFeedback.className = '';
-  // Show search terms config only for homepage mode
-  document.getElementById('search-terms-config').style.display = mode === 'homepage' ? 'block' : 'none';
   // Highlight selected label
   modeGroup.querySelectorAll('label').forEach(l => l.classList.remove('selected'));
   e.target.closest('label').classList.add('selected');
@@ -772,9 +763,6 @@ function showPanel(name) {
     const cfg = MODE_CONFIG['direct'];
     document.getElementById('url-input').placeholder = cfg.placeholder;
     hintEl.innerHTML = cfg.hint;
-
-    // Hide search terms config
-    document.getElementById('search-terms-config').style.display = 'none';
 
     // Clear progress, results, summary, downloads
     box.innerHTML = ''; box.style.display = 'none';
@@ -927,16 +915,12 @@ form.addEventListener('submit', async (e) => {
 
   // Start scan
   const mode = getSelectedMode();
-  const payload = {url, mode};
-  if (mode === 'homepage') {
-    payload.search_terms = document.getElementById('search-terms').value;
-  }
   let res;
   try {
     res = await fetch('/api/scan', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify(payload)
+      body: JSON.stringify({url, mode})
     });
   } catch (err) {
     statusLine.textContent = 'Network error \u2013 could not reach server.';
@@ -1110,16 +1094,10 @@ def api_scan():
     data = request.get_json(force=True)
     url = (data.get("url") or "").strip()
     mode = (data.get("mode") or "homepage").strip()
-    search_terms_str = (data.get("search_terms") or "").strip()
     if not url:
         return jsonify({"error": "URL is required."}), 400
     if mode not in ("direct", "homepage", "gis_page"):
         return jsonify({"error": "Invalid mode."}), 400
-
-    # Parse comma-separated search terms for homepage mode
-    search_terms = None
-    if mode == "homepage" and search_terms_str:
-        search_terms = [t.strip().lower() for t in search_terms_str.split(",") if t.strip()]
 
     job_id = uuid.uuid4().hex[:12]
     q: queue.Queue = queue.Queue()
@@ -1134,8 +1112,7 @@ def api_scan():
         try:
             job_output_dir = os.path.join(OUTPUT_DIR, job_id)
             result = scan(url, output_dir=job_output_dir, progress_callback=progress_cb,
-                          mode=mode, interaction=interaction,
-                          search_terms=search_terms)
+                          mode=mode, interaction=interaction)
             _jobs[job_id]["result"] = result
             _jobs[job_id]["status"] = "done"
             q.put(("done", json.dumps({

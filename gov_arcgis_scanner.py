@@ -87,7 +87,7 @@ SERVICE_KEYWORDS = (
 )
 
 # ---------------------------------------------------------------------------
-# Tier 2 — Layer Name Keyword Signals (8 semantic clusters)
+# Tier 2 — Layer Name Keyword Signals (10 semantic clusters)
 # ---------------------------------------------------------------------------
 
 # Cluster A: Zoning and Land Use Regulation
@@ -204,10 +204,45 @@ CLUSTER_H = [
     "military influence area",
 ]
 
+# Cluster I: Hazards and Development Restrictions
+CLUSTER_I = [
+    "floodplain", "flood plain", "flood zone", "floodway", "flood area",
+    "100 year flood", "100-year flood", "100 year floodway",
+    "500 year flood", "500-year flood",
+    "fema flood", "fema floodplain", "special flood hazard area", "sfha", "firm",
+    "fire zone", "fire hazard", "fire buffer",
+    "wildfire", "wildfire district", "wildfire zone", "wildfire hazard", "wui",
+    "earthquake zone", "seismic zone", "seismic hazard",
+    "liquefaction", "tsunami zone", "tsunami hazard", "geologic hazard",
+    "steep slope", "slope restriction", "slope overlay", "landslide", "erosion zone",
+    "contour", "10 foot contour", "100 foot contour", "topo contour",
+    "wetlands", "wetland buffer", "wetland setback",
+    "riparian buffer", "riparian zone", "riparian corridor",
+    "stream buffer", "stream setback", "river buffer", "waterbody setback",
+    "rivers", "streams", "ponds", "lakes", "waterbodies", "water bodies", "hydrology",
+    "conservation easement", "easement",
+    "agricultural district", "right to farm", "rtf zone", "rtf district", "farm buffer",
+]
+
+# Cluster J: Landmarks and Civic Features (supporting only — requires co-occurring signal)
+CLUSTER_J = [
+    "high school", "middle school", "elementary school", "public school",
+    "school location", "school point", "school site",
+    "parks", "park location", "park point",
+    "civic area", "civic center", "city hall", "county hall", "county courthouse", "courthouse",
+    "fire station", "police station", "library", "community center",
+    "transit stop", "transit node", "bus stop", "light rail stop", "train station",
+    "commuter rail", "airport",
+    "rivers", "streams", "lakes", "lakefront", "waterfront", "water feature",
+    "fountain", "playground", "ball field", "athletic field", "stadium", "sports complex",
+    "recreation area", "open space", "greenway",
+]
+
 # Combined flat list for simple keyword matching (backward compat)
 LAYER_KEYWORDS = (
     CLUSTER_A + CLUSTER_B + CLUSTER_C + CLUSTER_D +
-    CLUSTER_E + CLUSTER_F + CLUSTER_G + CLUSTER_H
+    CLUSTER_E + CLUSTER_F + CLUSTER_G + CLUSTER_H +
+    CLUSTER_I + CLUSTER_J
 )
 
 # ---------------------------------------------------------------------------
@@ -275,6 +310,8 @@ EXCLUDE_PATTERNS = [
 
 # Path to the planning layer pattern skill document (in repo)
 _SKILL_DOC_PATH = os.path.join(os.path.dirname(__file__), "docs", "planning-layer-pattern-skill.md")
+# Path to the ArcGIS REST crawler guide (in repo)
+_CRAWLER_GUIDE_PATH = os.path.join(os.path.dirname(__file__), "docs", "arcgis_rest_crawler_guide.md")
 
 
 def _parse_keywords_from_table(md_text: str, section_heading: str) -> list[str]:
@@ -360,7 +397,7 @@ def reload_keywords_from_skill_doc():
     global TIER1_DEPARTMENT_TOKENS, TIER1_LANDUSE_TOKENS, TIER1_DEVELOPMENT_TOKENS
     global SERVICE_KEYWORDS
     global CLUSTER_A, CLUSTER_B, CLUSTER_C, CLUSTER_D, CLUSTER_E, CLUSTER_F
-    global CLUSTER_G, CLUSTER_H, LAYER_KEYWORDS
+    global CLUSTER_G, CLUSTER_H, CLUSTER_I, CLUSTER_J, LAYER_KEYWORDS
     global EXCLUDE_SERVICE_TOKENS, EXCLUDE_LAYER_KEYWORDS
 
     if not os.path.isfile(_SKILL_DOC_PATH):
@@ -395,6 +432,7 @@ def reload_keywords_from_skill_doc():
         ("Cluster C", "CLUSTER_C"), ("Cluster D", "CLUSTER_D"),
         ("Cluster E", "CLUSTER_E"), ("Cluster F", "CLUSTER_F"),
         ("Cluster G", "CLUSTER_G"), ("Cluster H", "CLUSTER_H"),
+        ("Cluster I", "CLUSTER_I"), ("Cluster J", "CLUSTER_J"),
     ]:
         parsed = _parse_cluster_keywords(md, label)
         if parsed:
@@ -402,7 +440,8 @@ def reload_keywords_from_skill_doc():
 
     LAYER_KEYWORDS = (
         CLUSTER_A + CLUSTER_B + CLUSTER_C + CLUSTER_D +
-        CLUSTER_E + CLUSTER_F + CLUSTER_G + CLUSTER_H
+        CLUSTER_E + CLUSTER_F + CLUSTER_G + CLUSTER_H +
+        CLUSTER_I + CLUSTER_J
     )
 
     # --- Exclusion signals ---
@@ -442,6 +481,72 @@ def reload_keywords_from_skill_doc():
         EXCLUDE_SERVICE_TOKENS = excl_svc
     if excl_lyr:
         EXCLUDE_LAYER_KEYWORDS = excl_lyr
+
+
+def load_crawler_guide() -> dict:
+    """
+    Load the ArcGIS REST crawler guide from the repo and return a config dict
+    with allowed_terms (list[str]) and exclusion_terms (list[str]).
+    """
+    config = {"allowed_terms": [], "exclusion_terms": [], "max_depth": 5, "max_pages": 75}
+
+    if not os.path.isfile(_CRAWLER_GUIDE_PATH):
+        return config
+
+    try:
+        with open(_CRAWLER_GUIDE_PATH, "r", encoding="utf-8") as f:
+            md = f.read()
+    except OSError:
+        return config
+
+    # Parse code-fenced term lists under each CATEGORY section
+    in_allowed = False
+    in_exclusion = False
+    in_code_block = False
+    current_section = ""
+
+    for line in md.splitlines():
+        stripped = line.strip()
+
+        # Track section headings
+        if stripped.startswith("## Allowed Terms Lists"):
+            in_allowed = True
+            in_exclusion = False
+            continue
+        if stripped.startswith("## Exclusion List"):
+            in_allowed = False
+            in_exclusion = True
+            continue
+        if stripped.startswith("## ") and not stripped.startswith("### "):
+            if stripped.startswith("## Allowed") or stripped.startswith("## Exclusion"):
+                pass
+            else:
+                in_allowed = False
+                in_exclusion = False
+            continue
+
+        # Track ENABLED flag
+        if "**ENABLED:**" in stripped:
+            if "`false`" in stripped.lower():
+                current_section = "disabled"
+            else:
+                current_section = "enabled"
+            continue
+
+        # Track code blocks
+        if stripped == "```":
+            in_code_block = not in_code_block
+            continue
+
+        # Collect terms from code blocks
+        if in_code_block and stripped and current_section != "disabled":
+            term = stripped.lower()
+            if in_allowed:
+                config["allowed_terms"].append(term)
+            elif in_exclusion:
+                config["exclusion_terms"].append(term)
+
+    return config
 
 
 # ---------------------------------------------------------------------------
@@ -611,24 +716,51 @@ def extract_arcgis_rest_urls(text: str) -> set[str]:
     return urls
 
 
-def crawl_for_arcgis(start_url: str, interaction: InteractionRequest = None,
-                     search_terms: list[str] = None) -> set[str]:
+def _normalize_rest_directory(url: str) -> str:
     """
-    Multi-step crawl:
-      1. Scrape the start URL for ArcGIS links or GIS-related pages.
-      2. Follow GIS-related pages one level deeper.
-      3. Collect all ArcGIS REST Services Directory root URLs found.
-      4. If depth 3 exhausted with no results, prompt user for next step.
+    Given a URL that may point to a specific service (e.g.
+    .../rest/services/Addressing/FeatureServer), traverse up to the
+    root services directory (.../rest/services).
+    """
+    idx = url.lower().find("/rest/services")
+    if idx == -1:
+        return url
+    return url[: idx + len("/rest/services")]
 
-    When search_terms is provided (homepage mode), only follow links whose
-    page title or URL contain at least one of the search terms — this avoids
-    crawling the entire jurisdiction website.
+
+def expand_single_service_urls(found_urls: set[str]) -> set[str]:
     """
-    # Build the link-relevance keyword list
-    crawl_keywords = list(GIS_LINK_KEYWORDS)  # always include GIS-related terms
-    if search_terms:
-        crawl_keywords = list(set(crawl_keywords + search_terms))
-        progress.log(f"Homepage crawl will prioritize pages matching: {', '.join(search_terms[:10])}{'…' if len(search_terms) > 10 else ''}")
+    If a discovered URL points to a single FeatureServer/MapServer (e.g.
+    .../rest/services/Addressing/FeatureServer), traverse up to the root
+    services directory so we enumerate all services, not just one.
+    """
+    expanded: set[str] = set()
+    for url in found_urls:
+        root = _normalize_rest_directory(url)
+        expanded.add(root)
+        if root != url:
+            progress.log(f"  Expanded single service URL to directory root: {root}")
+    return expanded
+
+
+def crawl_for_arcgis(start_url: str, interaction: InteractionRequest = None) -> set[str]:
+    """
+    Multi-step crawl using terms from docs/arcgis_rest_crawler_guide.md:
+      1. Scrape the start URL for ArcGIS links or GIS-related pages.
+      2. Follow only links matching allowed terms (not exclusion terms).
+      3. Collect all ArcGIS REST Services Directory root URLs found.
+      4. If max depth exhausted with no results, prompt user for next step.
+    """
+    # Load crawl configuration from the guide file
+    guide = load_crawler_guide()
+    crawl_keywords = list(set(GIS_LINK_KEYWORDS + guide["allowed_terms"]))
+    exclusion_terms = guide["exclusion_terms"]
+    max_depth = guide["max_depth"]
+    max_pages = guide["max_pages"]
+
+    progress.log(f"Loaded crawler guide: {len(guide['allowed_terms'])} allowed terms, "
+                 f"{len(exclusion_terms)} exclusion terms, "
+                 f"max depth {max_depth}, max pages {max_pages}")
 
     progress.log(f"Starting crawl at {start_url}")
     visited: set[str] = set()
@@ -638,14 +770,14 @@ def crawl_for_arcgis(start_url: str, interaction: InteractionRequest = None,
     pages_crawled = 0
     max_depth_reached = False
 
-    while to_visit and pages_crawled < MAX_CRAWL_PAGES:
+    while to_visit and pages_crawled < max_pages:
         url, depth = to_visit.pop(0)
         if url in visited:
             continue
         visited.add(url)
         pages_crawled += 1
 
-        progress.log(f"  Crawling (depth {depth}/{3}): {url[:80]}{'…' if len(url) > 80 else ''}")
+        progress.log(f"  Crawling (depth {depth}/{max_depth}): {url[:80]}{'…' if len(url) > 80 else ''}")
 
         resp = fetch(url)
         if resp is None:
@@ -661,7 +793,7 @@ def crawl_for_arcgis(start_url: str, interaction: InteractionRequest = None,
             found_rest_urls.update(rest_urls)
 
         # If we haven't gone too deep, follow relevant links
-        if depth < 3:
+        if depth < max_depth:
             soup = BeautifulSoup(text, "html.parser")
             for a in soup.find_all("a", href=True):
                 href = a["href"]
@@ -681,6 +813,9 @@ def crawl_for_arcgis(start_url: str, interaction: InteractionRequest = None,
 
                 if is_same_domain or is_arcgis:
                     href_lower = full_url.lower() + " " + link_text
+                    # Skip links matching exclusion terms
+                    if exclusion_terms and any(ex in href_lower for ex in exclusion_terms):
+                        continue
                     if any(kw in href_lower for kw in crawl_keywords):
                         if full_url not in visited:
                             to_visit.append((full_url, depth + 1))
@@ -690,12 +825,12 @@ def crawl_for_arcgis(start_url: str, interaction: InteractionRequest = None,
     progress.stat("Pages crawled", pages_crawled)
     progress.stat("ArcGIS REST endpoints found", len(found_rest_urls))
 
-    # If we exhausted depth 3 with no results, prompt the user
+    # If we exhausted max depth with no results, prompt the user
     if not found_rest_urls and max_depth_reached and interaction:
-        progress.log("Crawl reached maximum depth (3 levels) without finding ArcGIS REST endpoints.")
+        progress.log(f"Crawl reached maximum depth ({max_depth} levels) without finding ArcGIS REST endpoints.")
         choice = interaction.ask(
             progress._callback,
-            "The crawl reached 3 levels deep without finding ArcGIS REST endpoints. What would you like to do?",
+            f"The crawl reached {max_depth} levels deep without finding ArcGIS REST endpoints. What would you like to do?",
             [
                 "Try common URL patterns (auto-guess)",
                 "Enter a different URL",
@@ -704,7 +839,7 @@ def crawl_for_arcgis(start_url: str, interaction: InteractionRequest = None,
         )
         if choice == "Stop scan":
             progress.log("User chose to stop the scan.")
-            return found_rest_urls
+            return expand_single_service_urls(found_rest_urls)
         elif choice == "Enter a different URL":
             progress.log("User chose to enter a different URL. Waiting for input…")
             new_url = interaction.ask(
@@ -721,16 +856,19 @@ def crawl_for_arcgis(start_url: str, interaction: InteractionRequest = None,
                 else:
                     # Treat the whole URL as a potential REST directory
                     found_rest_urls.add(new_url)
-            return found_rest_urls
+            return expand_single_service_urls(found_rest_urls)
         else:
             # Default: try guessing
             progress.log("Trying common ArcGIS URL patterns…")
             found_rest_urls = guess_arcgis_urls(start_url)
-            return found_rest_urls
+            return expand_single_service_urls(found_rest_urls)
 
     if not found_rest_urls:
         progress.log("No ArcGIS REST endpoints discovered via crawl – trying common URL patterns")
         found_rest_urls = guess_arcgis_urls(start_url)
+
+    # Expand any single-service URLs to the full directory root
+    found_rest_urls = expand_single_service_urls(found_rest_urls)
 
     return found_rest_urls
 
@@ -965,6 +1103,16 @@ def score_layer_name(layer_name: str) -> int:
     if h_hits > 0:
         score = max(score, 2)
 
+    # Cluster I (hazards and development restrictions) — standalone +2
+    i_hits = _count_cluster_hits(ln, CLUSTER_I)
+    if i_hits > 0:
+        score = max(score, 2)
+
+    # Cluster J (landmarks and civic features) — supporting only, +1
+    j_hits = _count_cluster_hits(ln, CLUSTER_J)
+    if j_hits > 0 and score == 0:
+        score = 1
+
     return score
 
 
@@ -1163,8 +1311,7 @@ def write_excel(layers: list[dict], output_path: str):
 # ---------------------------------------------------------------------------
 
 def scan(website_url: str, output_dir: str = ".", progress_callback=None,
-         mode: str = "homepage", interaction: InteractionRequest = None,
-         search_terms: list[str] = None) -> dict:
+         mode: str = "homepage", interaction: InteractionRequest = None) -> dict:
     """
     Full pipeline: validate → crawl → enumerate → filter → deduplicate → export.
 
@@ -1218,8 +1365,7 @@ def scan(website_url: str, output_dir: str = ".", progress_callback=None,
         # Path B: crawl from homepage (mode="homepage") or GIS page (mode="gis_page")
         label = "GIS department page" if mode == "gis_page" else "jurisdiction homepage"
         progress.log(f"Crawl mode: starting from {label}")
-        rest_urls = crawl_for_arcgis(website_url, interaction=interaction,
-                                     search_terms=search_terms)
+        rest_urls = crawl_for_arcgis(website_url, interaction=interaction)
 
     if not rest_urls:
         progress.log("ERROR: Could not discover any ArcGIS REST Services Directory.")
