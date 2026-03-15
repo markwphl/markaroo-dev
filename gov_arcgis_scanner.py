@@ -954,6 +954,199 @@ def guess_arcgis_urls(start_url: str) -> set[str]:
 
 
 # ---------------------------------------------------------------------------
+# Step 1B – LLM web search for ArcGIS REST endpoints
+# ---------------------------------------------------------------------------
+
+# Claude API configuration (reads from environment)
+_ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
+_LLM_MODEL = os.environ.get("ARCGIS_SCANNER_MODEL", "claude-sonnet-4-6")
+
+_LLM_SEARCH_SYSTEM_PROMPT = """\
+You are a web search agent. Your sole task is to find the ArcGIS REST Services \
+Directory URL for a specific local government jurisdiction.
+
+## What You Are Looking For
+
+You are searching for a URL that contains one of these target patterns:
+- /arcgis/rest/services
+- /ArcGIS/rest/services
+- /server/rest/services
+- rest/services
+
+These are typically hosted at subdomains like:
+- https://gis.<domain>/arcgis/rest/services
+- https://maps.<domain>/arcgis/rest/services
+- https://mapping.<domain>/arcgis/rest/services
+- https://gisweb.<domain>/arcgis/rest/services
+- https://services.<domain>/arcgis/rest/services
+- https://arcgis.<domain>/arcgis/rest/services
+- https://webgis.<domain>/arcgis/rest/services
+- https://egis.<domain>/arcgis/rest/services
+- https://geoportal.<domain>/arcgis/rest/services
+- https://opendata.<domain>/arcgis/rest/services
+- https://<jurisdiction>.maps.arcgis.com
+- https://<jurisdiction>.hub.arcgis.com
+
+Secondary signals (promising but not sufficient alone):
+- arcgis.com/home, /arcgis/home, /portal/home
+- hub.arcgis.com, opendata.arcgis.com
+- /apps/webappviewer, /apps/mapviewer
+- "Powered by Esri", "Built with ArcGIS"
+- MapServer, FeatureServer, ImageServer, GeocodeServer, GPServer
+
+## Instructions
+
+1. Search the web for the jurisdiction's ArcGIS REST Services Directory.
+2. Try multiple search queries if the first doesn't find it (e.g., include "GIS", \
+"ArcGIS", "rest services", "map services", the jurisdiction name).
+3. Examine search results for URLs matching the target patterns above.
+4. If you find a matching URL, verify it by fetching the page if possible.
+5. Report ALL matching ArcGIS REST Services Directory URLs you find.
+
+## Output Format
+
+After your search, respond with ONLY a JSON object (no markdown fences):
+{
+  "found": true or false,
+  "urls": ["https://gis.example.gov/arcgis/rest/services", ...],
+  "confidence": "confirmed" or "probable" or "not_found",
+  "notes": "Brief explanation of what you found"
+}
+
+If you find NO matching URLs, set "found" to false and "urls" to an empty list.
+Do NOT fabricate or guess URLs. Only report URLs you actually found in search results."""
+
+
+def llm_search_for_arcgis(jurisdiction_name: str, homepage_url: str = "",
+                          interaction: InteractionRequest = None) -> set[str]:
+    """
+    Use Claude API with web search to find ArcGIS REST Services Directory
+    URLs for a government jurisdiction.
+
+    Falls back to the mechanical crawler if no API key is configured.
+    """
+    if not _ANTHROPIC_API_KEY:
+        progress.log("No ANTHROPIC_API_KEY set — falling back to mechanical crawler")
+        return crawl_for_arcgis(homepage_url or f"https://www.{jurisdiction_name}.gov",
+                                interaction=interaction)
+
+    try:
+        import anthropic
+    except ImportError:
+        progress.log("anthropic package not installed — falling back to mechanical crawler")
+        return crawl_for_arcgis(homepage_url or f"https://www.{jurisdiction_name}.gov",
+                                interaction=interaction)
+
+    # Step 1: Fast-path probe common subdomains first (free, no LLM needed)
+    if homepage_url:
+        progress.log("Fast-path: probing common ArcGIS subdomains…")
+        fast_results = guess_arcgis_urls(homepage_url)
+        if fast_results:
+            progress.log(f"Fast-path found {len(fast_results)} endpoint(s) — skipping LLM search")
+            return expand_single_service_urls(fast_results)
+
+    # Step 2: LLM web search
+    progress.log(f"Searching the web for ArcGIS REST services: {jurisdiction_name}")
+
+    # Build the search prompt
+    domain_hint = ""
+    if homepage_url:
+        parsed = urlparse(homepage_url)
+        domain_hint = f"\nTheir website domain is: {parsed.netloc}"
+
+    user_prompt = (
+        f"Find the ArcGIS REST Services Directory for: {jurisdiction_name}\n"
+        f"{domain_hint}\n\n"
+        f"Search for this jurisdiction's GIS/mapping services and locate their "
+        f"ArcGIS REST Services Directory URL (contains '/arcgis/rest/services' "
+        f"or similar pattern)."
+    )
+
+    client = anthropic.Anthropic(api_key=_ANTHROPIC_API_KEY)
+    messages = [{"role": "user", "content": user_prompt}]
+
+    found_urls: set[str] = set()
+    max_continuations = 5
+
+    try:
+        for continuation in range(max_continuations + 1):
+            progress.log(f"  LLM search call {continuation + 1}…")
+
+            response = client.messages.create(
+                model=_LLM_MODEL,
+                max_tokens=4096,
+                system=_LLM_SEARCH_SYSTEM_PROMPT,
+                tools=[
+                    {"type": "web_search_20250305", "name": "web_search"},
+                ],
+                messages=messages,
+            )
+
+            # If Claude is done, extract the final answer
+            if response.stop_reason == "end_turn":
+                _parse_llm_search_response(response, found_urls)
+                break
+
+            # If Claude needs to continue (server tool hit iteration limit)
+            if response.stop_reason == "pause_turn":
+                messages = [
+                    {"role": "user", "content": user_prompt},
+                    {"role": "assistant", "content": response.content},
+                ]
+                continue
+
+            # Unexpected stop reason
+            progress.log(f"  Unexpected stop_reason: {response.stop_reason}")
+            _parse_llm_search_response(response, found_urls)
+            break
+
+    except Exception as e:
+        progress.log(f"  LLM search error: {e}")
+        if homepage_url:
+            progress.log("  Falling back to mechanical crawler…")
+            return crawl_for_arcgis(homepage_url, interaction=interaction)
+
+    if found_urls:
+        progress.log(f"LLM search found {len(found_urls)} ArcGIS REST endpoint(s)")
+        for url in found_urls:
+            progress.log(f"  ✓ {url}")
+    else:
+        progress.log("LLM search did not find any ArcGIS REST endpoints")
+        # Fall back to mechanical crawler if we have a homepage URL
+        if homepage_url:
+            progress.log("Falling back to mechanical crawler…")
+            return crawl_for_arcgis(homepage_url, interaction=interaction)
+
+    return expand_single_service_urls(found_urls)
+
+
+def _parse_llm_search_response(response, found_urls: set[str]):
+    """Extract ArcGIS REST URLs from the LLM's JSON response."""
+    for block in response.content:
+        if getattr(block, "type", None) != "text":
+            continue
+        text = block.text.strip()
+
+        # Try to parse as JSON
+        try:
+            data = json.loads(text)
+            urls = data.get("urls", [])
+            for url in urls:
+                if isinstance(url, str) and url.startswith("http"):
+                    found_urls.add(url.rstrip("/"))
+            if data.get("notes"):
+                progress.log(f"  LLM notes: {data['notes']}")
+            return
+        except (json.JSONDecodeError, ValueError):
+            pass
+
+        # Fallback: scan the text for ArcGIS REST URL patterns
+        rest_urls = extract_arcgis_rest_urls(text)
+        if rest_urls:
+            found_urls.update(rest_urls)
+
+
+# ---------------------------------------------------------------------------
 # Step 2 – Query ArcGIS REST API for folders, services, and layers
 # ---------------------------------------------------------------------------
 
@@ -1365,9 +1558,10 @@ def write_excel(layers: list[dict], output_path: str):
 # ---------------------------------------------------------------------------
 
 def scan(website_url: str, output_dir: str = ".", progress_callback=None,
-         mode: str = "homepage", interaction: InteractionRequest = None) -> dict:
+         mode: str = "homepage", interaction: InteractionRequest = None,
+         jurisdiction_name: str = "") -> dict:
     """
-    Full pipeline: validate → crawl → enumerate → filter → deduplicate → export.
+    Full pipeline: validate → search/crawl → enumerate → filter → deduplicate → export.
 
     Args:
         website_url: Root URL of the government website (or REST directory / GIS page).
@@ -1378,6 +1572,8 @@ def scan(website_url: str, output_dir: str = ".", progress_callback=None,
             "homepage" – URL is the jurisdiction's main website (Path B).
             "gis_page" – URL is a GIS department / resources page (Path B).
         interaction: Optional InteractionRequest for mid-scan user prompts.
+        jurisdiction_name: Optional human-readable name (e.g., "City of Las Vegas").
+            If empty, derived from the URL domain.
 
     Returns:
         dict with keys: xl_path, md_path, stats, error (if any).
@@ -1416,10 +1612,24 @@ def scan(website_url: str, output_dir: str = ".", progress_callback=None,
         rest_urls = {rest_url}
         progress.log(f"Direct mode: using ArcGIS REST directory at {rest_url}")
     else:
-        # Path B: crawl from homepage (mode="homepage") or GIS page (mode="gis_page")
+        # Path B: search for ArcGIS REST endpoints via LLM web search
+        if not jurisdiction_name:
+            # Derive a human-readable name from the domain
+            parsed_url = urlparse(website_url)
+            domain = parsed_url.netloc.replace("www.", "")
+            # e.g., "cityoflasvegas.com" → "cityoflasvegas" → "city of las vegas"
+            jurisdiction_slug = domain.split(".")[0]
+            # Insert spaces before capital letters and replace common separators
+            jurisdiction_name = re.sub(r"([a-z])([A-Z])", r"\1 \2", jurisdiction_slug)
+            jurisdiction_name = jurisdiction_name.replace("-", " ").replace("_", " ")
+
         label = "GIS department page" if mode == "gis_page" else "jurisdiction homepage"
-        progress.log(f"Crawl mode: starting from {label}")
-        rest_urls = crawl_for_arcgis(website_url, interaction=interaction)
+        progress.log(f"Search mode: finding ArcGIS endpoints for {jurisdiction_name} ({label})")
+        rest_urls = llm_search_for_arcgis(
+            jurisdiction_name=jurisdiction_name,
+            homepage_url=website_url,
+            interaction=interaction,
+        )
 
     if not rest_urls:
         progress.log("ERROR: Could not discover any ArcGIS REST Services Directory.")
