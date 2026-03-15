@@ -22,7 +22,11 @@ from typing import Optional
 from urllib.parse import urljoin, urlparse
 
 import requests
+import urllib3
 from bs4 import BeautifulSoup
+
+# Suppress InsecureRequestWarning for government sites with bad SSL certs
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font, PatternFill
 
@@ -603,14 +607,44 @@ session.headers.update(HEADERS)
 
 def fetch(url: str, timeout: int = REQUEST_TIMEOUT) -> Optional[requests.Response]:
     """GET with retries and error handling."""
+    last_error = None
     for attempt in range(3):
         try:
             r = session.get(url, timeout=timeout, allow_redirects=True)
             r.raise_for_status()
             return r
-        except requests.RequestException:
+        except requests.exceptions.SSLError:
+            # Retry once without SSL verification for government sites
+            # with misconfigured certificates
+            try:
+                r = session.get(url, timeout=timeout, allow_redirects=True,
+                                verify=False)
+                r.raise_for_status()
+                return r
+            except requests.RequestException as e:
+                last_error = f"SSL error and fallback failed: {e}"
+                break
+        except requests.exceptions.HTTPError as e:
+            last_error = f"HTTP {r.status_code}"
+            # Some government pages return 403 but still have usable content
+            if r.status_code in (403, 406):
+                return r
             if attempt < 2:
                 time.sleep(1 * (attempt + 1))
+        except requests.exceptions.ConnectionError as e:
+            last_error = f"Connection error: {e}"
+            if attempt < 2:
+                time.sleep(1 * (attempt + 1))
+        except requests.exceptions.Timeout:
+            last_error = "Request timed out"
+            if attempt < 2:
+                time.sleep(1 * (attempt + 1))
+        except requests.RequestException as e:
+            last_error = str(e)
+            if attempt < 2:
+                time.sleep(1 * (attempt + 1))
+    if last_error:
+        progress.log(f"    ⚠ Fetch failed: {last_error}")
     return None
 
 
@@ -650,10 +684,30 @@ def validate_url(url: str, mode: str = "homepage") -> dict:
             return {"valid": True,
                     "message": f"URL is reachable (HTTP {r.status_code}).",
                     "status_code": r.status_code}
-        else:
-            return {"valid": False,
-                    "message": f"URL returned HTTP {r.status_code}.",
+        # Some government sites block HEAD requests; retry with GET
+        r = session.get(url, timeout=10, allow_redirects=True)
+        if r.status_code < 400:
+            return {"valid": True,
+                    "message": f"URL is reachable (HTTP {r.status_code}).",
                     "status_code": r.status_code}
+        return {"valid": False,
+                "message": f"URL returned HTTP {r.status_code}.",
+                "status_code": r.status_code}
+    except requests.exceptions.SSLError:
+        # Retry without SSL verification for misconfigured government certs
+        try:
+            r = session.head(url, timeout=10, allow_redirects=True, verify=False)
+            if r.status_code < 400:
+                return {"valid": True,
+                        "message": f"URL is reachable (HTTP {r.status_code}, SSL certificate issue bypassed).",
+                        "status_code": r.status_code}
+            return {"valid": False,
+                    "message": f"URL returned HTTP {r.status_code} (SSL certificate issue bypassed).",
+                    "status_code": r.status_code}
+        except requests.RequestException as e:
+            return {"valid": False,
+                    "message": f"SSL certificate error and fallback failed: {e}",
+                    "status_code": None}
     except requests.ConnectionError:
         return {"valid": False, "message": "Could not connect to the server. Check the URL and your network.",
                 "status_code": None}
