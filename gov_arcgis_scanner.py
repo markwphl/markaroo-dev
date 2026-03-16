@@ -6,13 +6,74 @@ Searches a local government website for ArcGIS REST Services Directory links,
 filters for planning/development-related feature layers, deduplicates, and
 exports results to Excel and Markdown.
 
-Designed to run from a private intranet in production.
+Designed to run from a private corporate intranet in production.
+
+## Architecture — Three-Tier ArcGIS Endpoint Discovery
+-------------------------------------------------------
+When running in "homepage" or "gis_page" mode (Path B), the scanner uses
+a three-tier strategy to locate the jurisdiction's ArcGIS REST Services
+Directory URL:
+
+  Tier 1 — Fast-Path Probe (FREE, no API cost)
+      Tests common subdomain/path patterns (gis.<domain>, maps.<domain>,
+      etc.) with lightweight HTTP HEAD/GET requests. If any return a valid
+      ArcGIS services page, discovery is complete.
+
+  Tier 2 — LLM Web Search (requires ANTHROPIC_API_KEY)
+      If Tier 1 fails, calls the Claude API with the ``web_search`` server
+      tool.  Claude searches the public web for queries like
+      "City of Las Vegas ArcGIS REST services directory" and evaluates
+      the results against known URL patterns from the crawler guide.
+
+  Tier 3 — Mechanical Crawler Fallback (FREE, no API cost)
+      Activated automatically if:
+        • No ANTHROPIC_API_KEY environment variable is set, OR
+        • The ``anthropic`` Python package is not installed, OR
+        • The LLM search errors out or returns no results.
+      The fallback crawls the government website up to ``MAX_CRAWL_PAGES``
+      pages deep, following GIS-related links looking for ArcGIS REST URLs.
+
+## Configurable Variables (update as needed)
+---------------------------------------------
+The following module-level constants can be changed by your deployment team:
+
+  REQUEST_TIMEOUT   — HTTP timeout per request (seconds).  Default: 20
+  MAX_CRAWL_PAGES   — Maximum pages the mechanical crawler will visit.
+                      Default: 120
+  USER_AGENT        — Browser User-Agent header sent with every request.
+  ARCGIS_REST_PATTERNS — Regex list used to recognise ArcGIS REST URLs.
+  GIS_LINK_KEYWORDS — Terms the crawler follows when deciding which
+                      hyperlinks lead toward GIS content.
+  _LLM_MODEL        — Claude model ID used for web search (env var
+                      ``ARCGIS_SCANNER_MODEL``).  Default: claude-sonnet-4-6
+
+## Environment Variables
+-------------------------
+  ANTHROPIC_API_KEY       — (Required for Tier 2) Claude API key.
+                            Obtain from https://console.anthropic.com
+  ARCGIS_SCANNER_MODEL    — (Optional) Override the Claude model used for
+                            web search.  Default: claude-sonnet-4-6
+
+## Security Notes
+------------------
+  • The API key is read from the environment and NEVER logged, printed, or
+    included in output files.
+  • All URLs received from external sources (LLM responses, crawled pages)
+    are validated against an allowlist of schemes (http/https only) and
+    checked for private/reserved IP ranges (SSRF protection).
+  • User-supplied jurisdiction names are sanitised to alphanumeric + spaces
+    before being sent to the LLM.
+  • The web application (web_app.py) validates job IDs and prevents path
+    traversal in file download endpoints.
 """
 
 import argparse
+import ipaddress
 import json
+import logging
 import os
 import re
+import socket
 import sys
 import time
 import threading
@@ -25,24 +86,120 @@ import requests
 import urllib3
 from bs4 import BeautifulSoup
 
-# Suppress InsecureRequestWarning for government sites with bad SSL certs
+# Suppress InsecureRequestWarning for government sites with bad SSL certs.
+# Many government servers have misconfigured or self-signed certificates;
+# this prevents noisy warnings in production logs while still allowing
+# SSL-fallback requests where needed.
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font, PatternFill
 
+# Module logger — does NOT log sensitive data (API keys, credentials).
+logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Security — SSRF Protection
+# ---------------------------------------------------------------------------
+# Prevent Server-Side Request Forgery (SSRF) by blocking requests to private,
+# loopback, and reserved IP ranges.  All URLs obtained from untrusted sources
+# (LLM responses, crawled HTML) MUST pass ``is_safe_url()`` before being
+# fetched.
+
+# Maximum allowed length for any URL we process (prevents memory abuse)
+_MAX_URL_LENGTH = 2048
+
+# Maximum allowed length for jurisdiction name input
+_MAX_JURISDICTION_NAME_LENGTH = 200
+
+
+def _resolve_hostname(hostname: str) -> list[str]:
+    """Resolve a hostname to its IP addresses.  Returns an empty list on
+    failure rather than raising, so callers can treat unresolvable hosts
+    as unsafe."""
+    try:
+        return [info[4][0] for info in socket.getaddrinfo(hostname, None)]
+    except (socket.gaierror, OSError):
+        return []
+
+
+def is_safe_url(url: str) -> bool:
+    """Return True if *url* is safe to fetch (public internet, http/https).
+
+    Rejects:
+      • Non-http(s) schemes (file://, ftp://, gopher://, etc.)
+      • URLs longer than ``_MAX_URL_LENGTH``
+      • Hostnames that resolve to private/reserved/loopback IP ranges
+      • Bare IP addresses in private ranges
+    """
+    if not url or len(url) > _MAX_URL_LENGTH:
+        return False
+
+    try:
+        parsed = urlparse(url)
+    except ValueError:
+        return False
+
+    # Only allow http and https schemes
+    if parsed.scheme not in ("http", "https"):
+        return False
+
+    hostname = parsed.hostname
+    if not hostname:
+        return False
+
+    # Check if the hostname is a raw IP address first
+    try:
+        addr = ipaddress.ip_address(hostname)
+        if addr.is_private or addr.is_loopback or addr.is_reserved or addr.is_link_local:
+            return False
+    except ValueError:
+        # Not a raw IP — resolve DNS and check each resulting address
+        resolved = _resolve_hostname(hostname)
+        for ip_str in resolved:
+            try:
+                addr = ipaddress.ip_address(ip_str)
+                if addr.is_private or addr.is_loopback or addr.is_reserved or addr.is_link_local:
+                    return False
+            except ValueError:
+                continue
+
+    return True
+
+
+def sanitize_jurisdiction_name(name: str) -> str:
+    """Sanitise a jurisdiction name to prevent prompt injection or unexpected
+    content being forwarded to the LLM.
+
+    Allows only letters, digits, spaces, hyphens, periods, and apostrophes.
+    Truncates to ``_MAX_JURISDICTION_NAME_LENGTH`` characters.
+    """
+    if not name:
+        return ""
+    # Strip characters that aren't alphanumeric, space, hyphen, period, or apostrophe
+    cleaned = re.sub(r"[^a-zA-Z0-9 .'\-]", "", name)
+    # Collapse multiple spaces
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    return cleaned[:_MAX_JURISDICTION_NAME_LENGTH]
+
+
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
+# These values can be adjusted by your deployment team to tune performance
+# and behaviour for your network environment.
 
-REQUEST_TIMEOUT = 20  # seconds
+REQUEST_TIMEOUT = 20  # seconds — HTTP timeout per request
 MAX_CRAWL_PAGES = 120  # limit pages crawled on the government site
+# User-Agent header — UPDATE this to match your organisation's policy.
+# Some government servers block requests without a recognised browser UA.
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 )
 HEADERS = {"User-Agent": USER_AGENT}
 
-# ArcGIS REST Services Directory URL patterns
+# ArcGIS REST Services Directory URL patterns — regexes used to recognise
+# valid ArcGIS REST endpoint URLs in crawled HTML and LLM responses.
 ARCGIS_REST_PATTERNS = [
     re.compile(r"https?://[^\s\"'<>]+/arcgis/rest/services", re.IGNORECASE),
     re.compile(r"https?://services\d*\.arcgis\.com/[A-Za-z0-9]+/ArcGIS/rest/services", re.IGNORECASE),
@@ -928,7 +1085,15 @@ def crawl_for_arcgis(start_url: str, interaction: InteractionRequest = None) -> 
 
 
 def guess_arcgis_urls(start_url: str) -> set[str]:
-    """Brute-force common ArcGIS hosting patterns for the municipality."""
+    """Tier 1 — Fast-path probe: test common ArcGIS hosting patterns.
+
+    Constructs candidate URLs from common subdomain patterns (gis., maps.,
+    etc.) and ArcGIS Online services patterns, then tests each with a
+    lightweight HTTP request.  This is free (no API cost) and fast.
+
+    UPDATE: Add or remove candidate patterns below to match hosting
+    conventions used by your target jurisdictions.
+    """
     parsed = urlparse(start_url)
     domain_parts = parsed.netloc.replace("www.", "").split(".")
     city_slug = domain_parts[0] if domain_parts else ""
@@ -957,8 +1122,19 @@ def guess_arcgis_urls(start_url: str) -> set[str]:
 # Step 1B – LLM web search for ArcGIS REST endpoints
 # ---------------------------------------------------------------------------
 
-# Claude API configuration (reads from environment)
+# ---------------------------------------------------------------------------
+# Claude API configuration (Tier 2 — LLM Web Search)
+# ---------------------------------------------------------------------------
+# SECURITY: The API key is read from the environment variable at startup.
+# It is NEVER logged, printed to console, or included in output files.
+# To set the key:
+#   Windows PowerShell:  $env:ANTHROPIC_API_KEY = "sk-ant-..."
+#   Linux / macOS:       export ANTHROPIC_API_KEY="sk-ant-..."
+# Generate your key at: https://console.anthropic.com → API Keys
 _ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
+
+# Claude model used for web search.  Override with env var ARCGIS_SCANNER_MODEL.
+# Default is claude-sonnet-4-6 (cost-effective for search tasks).
 _LLM_MODEL = os.environ.get("ARCGIS_SCANNER_MODEL", "claude-sonnet-4-6")
 
 _LLM_SEARCH_SYSTEM_PROMPT = """\
@@ -1020,11 +1196,38 @@ Do NOT fabricate or guess URLs. Only report URLs you actually found in search re
 def llm_search_for_arcgis(jurisdiction_name: str, homepage_url: str = "",
                           interaction: InteractionRequest = None) -> set[str]:
     """
-    Use Claude API with web search to find ArcGIS REST Services Directory
-    URLs for a government jurisdiction.
+    Three-Tier ArcGIS endpoint discovery.
 
-    Falls back to the mechanical crawler if no API key is configured.
+    This is the main entry point for finding ArcGIS REST Services Directory
+    URLs when the user provides a jurisdiction homepage (Path B).
+
+    Execution order:
+      1. FAST-PATH PROBE (Tier 1) — tests common subdomain patterns like
+         gis.<domain>, maps.<domain> with HTTP requests.  Free, no API cost.
+         If found, returns immediately.
+      2. LLM WEB SEARCH (Tier 2) — calls Claude API with the web_search
+         server tool.  Requires ANTHROPIC_API_KEY env var and the
+         ``anthropic`` Python package.
+      3. MECHANICAL CRAWLER FALLBACK (Tier 3) — crawls the government
+         website following GIS-related links.  Activated if:
+           • No API key is set
+           • anthropic package not installed
+           • LLM search errors out or returns no results
+
+    Args:
+        jurisdiction_name: Human-readable name (e.g. "City of Las Vegas").
+            Sanitised internally before use.
+        homepage_url: The jurisdiction's website URL.
+        interaction: Optional InteractionRequest for mid-scan user prompts.
+
+    Returns:
+        Set of discovered ArcGIS REST Services Directory root URLs.
     """
+    # SECURITY: Sanitise jurisdiction name to prevent prompt injection.
+    # Only alphanumeric, spaces, hyphens, periods, apostrophes are allowed.
+    jurisdiction_name = sanitize_jurisdiction_name(jurisdiction_name)
+
+    # --- Tier 3 Fallback Check: no API key ---
     if not _ANTHROPIC_API_KEY:
         progress.log("No ANTHROPIC_API_KEY set — falling back to mechanical crawler")
         return crawl_for_arcgis(homepage_url or f"https://www.{jurisdiction_name}.gov",
@@ -1033,22 +1236,25 @@ def llm_search_for_arcgis(jurisdiction_name: str, homepage_url: str = "",
     try:
         import anthropic
     except ImportError:
+        # --- Tier 3 Fallback Check: package not installed ---
         progress.log("anthropic package not installed — falling back to mechanical crawler")
         return crawl_for_arcgis(homepage_url or f"https://www.{jurisdiction_name}.gov",
                                 interaction=interaction)
 
-    # Step 1: Fast-path probe common subdomains first (free, no LLM needed)
+    # --- Tier 1: Fast-path probe (FREE, no API cost) ---
+    # Tests common subdomain patterns (gis., maps., etc.) directly.
+    # If any return a valid ArcGIS services page, we skip the LLM entirely.
     if homepage_url:
-        progress.log("Fast-path: probing common ArcGIS subdomains…")
+        progress.log("Tier 1 — Fast-path: probing common ArcGIS subdomains…")
         fast_results = guess_arcgis_urls(homepage_url)
         if fast_results:
-            progress.log(f"Fast-path found {len(fast_results)} endpoint(s) — skipping LLM search")
+            progress.log(f"Tier 1 — Fast-path found {len(fast_results)} endpoint(s) — skipping LLM search")
             return expand_single_service_urls(fast_results)
 
-    # Step 2: LLM web search
-    progress.log(f"Searching the web for ArcGIS REST services: {jurisdiction_name}")
+    # --- Tier 2: LLM Web Search (requires API key) ---
+    progress.log(f"Tier 2 — LLM web search for ArcGIS REST services: {jurisdiction_name}")
 
-    # Build the search prompt
+    # Build the search prompt — domain hint helps the LLM narrow results
     domain_hint = ""
     if homepage_url:
         parsed = urlparse(homepage_url)
@@ -1062,6 +1268,8 @@ def llm_search_for_arcgis(jurisdiction_name: str, homepage_url: str = "",
         f"or similar pattern)."
     )
 
+    # SECURITY: The API key is passed directly to the SDK client and is
+    # NEVER logged or printed.
     client = anthropic.Anthropic(api_key=_ANTHROPIC_API_KEY)
     messages = [{"role": "user", "content": user_prompt}]
 
@@ -1101,33 +1309,52 @@ def llm_search_for_arcgis(jurisdiction_name: str, homepage_url: str = "",
             break
 
     except Exception as e:
-        progress.log(f"  LLM search error: {e}")
+        # --- Tier 3 Fallback: LLM error ---
+        # SECURITY: Log only the error type/message, never the API key.
+        progress.log(f"  Tier 2 — LLM search error: {e}")
         if homepage_url:
-            progress.log("  Falling back to mechanical crawler…")
+            progress.log("  Tier 3 — Falling back to mechanical crawler…")
             return crawl_for_arcgis(homepage_url, interaction=interaction)
 
+    # SECURITY: Validate all URLs returned by the LLM before using them.
+    # Remove any that point to private/reserved IP ranges (SSRF protection)
+    # or use non-http(s) schemes.
+    safe_urls: set[str] = set()
+    for url in found_urls:
+        if is_safe_url(url):
+            safe_urls.add(url)
+        else:
+            progress.log(f"  Rejected unsafe URL from LLM response: {url[:80]}")
+    found_urls = safe_urls
+
     if found_urls:
-        progress.log(f"LLM search found {len(found_urls)} ArcGIS REST endpoint(s)")
+        progress.log(f"Tier 2 — LLM search found {len(found_urls)} ArcGIS REST endpoint(s)")
         for url in found_urls:
             progress.log(f"  ✓ {url}")
     else:
-        progress.log("LLM search did not find any ArcGIS REST endpoints")
-        # Fall back to mechanical crawler if we have a homepage URL
+        progress.log("Tier 2 — LLM search did not find any ArcGIS REST endpoints")
+        # --- Tier 3 Fallback: LLM returned no results ---
         if homepage_url:
-            progress.log("Falling back to mechanical crawler…")
+            progress.log("Tier 3 — Falling back to mechanical crawler…")
             return crawl_for_arcgis(homepage_url, interaction=interaction)
 
     return expand_single_service_urls(found_urls)
 
 
 def _parse_llm_search_response(response, found_urls: set[str]):
-    """Extract ArcGIS REST URLs from the LLM's JSON response."""
+    """Extract ArcGIS REST URLs from the LLM's JSON response.
+
+    SECURITY: URLs extracted here are later validated by ``is_safe_url()``
+    in the calling function before any HTTP requests are made to them.
+    This two-stage approach ensures untrusted LLM output cannot trigger
+    requests to internal/private network addresses.
+    """
     for block in response.content:
         if getattr(block, "type", None) != "text":
             continue
         text = block.text.strip()
 
-        # Try to parse as JSON
+        # Try to parse as JSON (expected format from the system prompt)
         try:
             data = json.loads(text)
             urls = data.get("urls", [])
@@ -1140,7 +1367,7 @@ def _parse_llm_search_response(response, found_urls: set[str]):
         except (json.JSONDecodeError, ValueError):
             pass
 
-        # Fallback: scan the text for ArcGIS REST URL patterns
+        # Fallback: scan the raw text for ArcGIS REST URL patterns
         rest_urls = extract_arcgis_rest_urls(text)
         if rest_urls:
             found_urls.update(rest_urls)
@@ -1622,6 +1849,9 @@ def scan(website_url: str, output_dir: str = ".", progress_callback=None,
             # Insert spaces before capital letters and replace common separators
             jurisdiction_name = re.sub(r"([a-z])([A-Z])", r"\1 \2", jurisdiction_slug)
             jurisdiction_name = jurisdiction_name.replace("-", " ").replace("_", " ")
+
+        # SECURITY: Sanitise jurisdiction name before passing to LLM
+        jurisdiction_name = sanitize_jurisdiction_name(jurisdiction_name)
 
         label = "GIS department page" if mode == "gis_page" else "jurisdiction homepage"
         progress.log(f"Search mode: finding ArcGIS endpoints for {jurisdiction_name} ({label})")

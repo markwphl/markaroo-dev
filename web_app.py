@@ -12,11 +12,20 @@ Provides:
     - Real-time progress via Server-Sent Events (SSE)
     - Summary statistics table
     - Download buttons for Excel and Markdown output files
+
+Security Notes
+--------------
+    • All user input (URL, mode, job ID) is validated before use.
+    • Job IDs are validated as hex strings to prevent path traversal.
+    • File downloads are restricted to the expected output directory.
+    • HTML output uses textContent (not innerHTML) for user data to prevent XSS.
+    • URL input is length-limited and scheme-validated server-side.
 """
 
 import json
 import os
 import queue
+import re
 import threading
 import uuid
 from html import escape
@@ -36,6 +45,18 @@ os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 # In-flight scan jobs: job_id -> {queue, result, status}
 _jobs: dict[str, dict] = {}
+
+# Maximum URL length accepted from user input (prevents abuse)
+_MAX_INPUT_URL_LENGTH = 2048
+
+# Regex for valid job IDs — must be exactly 12 hex characters.
+# SECURITY: This prevents path traversal attacks in /api/download/<job_id>/
+_JOB_ID_PATTERN = re.compile(r"^[0-9a-f]{12}$")
+
+
+def _is_valid_job_id(job_id: str) -> bool:
+    """Validate that a job ID is a safe hex string (no path traversal)."""
+    return bool(_JOB_ID_PATTERN.match(job_id))
 
 # ---------------------------------------------------------------------------
 # HTML template (single-page app, no external dependencies)
@@ -1085,17 +1106,27 @@ def api_validate():
     mode = (data.get("mode") or "homepage").strip()
     if not url:
         return jsonify({"valid": False, "message": "URL is required."})
+    # SECURITY: Enforce URL length limit
+    if len(url) > _MAX_INPUT_URL_LENGTH:
+        return jsonify({"valid": False, "message": "URL is too long."})
     result = validate_url(url, mode=mode)
     return jsonify(result)
 
 
 @app.route("/api/scan", methods=["POST"])
 def api_scan():
+    """Start a new scan job.  Validates inputs before launching."""
     data = request.get_json(force=True)
     url = (data.get("url") or "").strip()
     mode = (data.get("mode") or "homepage").strip()
     if not url:
         return jsonify({"error": "URL is required."}), 400
+    # SECURITY: Enforce URL length limit
+    if len(url) > _MAX_INPUT_URL_LENGTH:
+        return jsonify({"error": "URL is too long."}), 400
+    # SECURITY: Validate URL scheme — only http/https allowed
+    if not url.startswith(("http://", "https://")):
+        return jsonify({"error": "URL must start with http:// or https://"}), 400
     if mode not in ("direct", "homepage", "gis_page"):
         return jsonify({"error": "Invalid mode."}), 400
 
@@ -1133,6 +1164,9 @@ def api_scan():
 @app.route("/api/respond/<job_id>", methods=["POST"])
 def api_respond(job_id):
     """Handle user response to a mid-scan prompt."""
+    # SECURITY: Validate job ID format to prevent injection
+    if not _is_valid_job_id(job_id):
+        return jsonify({"error": "Invalid job ID"}), 400
     job = _jobs.get(job_id)
     if not job:
         return jsonify({"error": "Job not found"}), 404
@@ -1147,6 +1181,10 @@ def api_respond(job_id):
 
 @app.route("/api/progress/<job_id>")
 def api_progress(job_id):
+    """Stream scan progress events via Server-Sent Events (SSE)."""
+    # SECURITY: Validate job ID format
+    if not _is_valid_job_id(job_id):
+        return "Invalid job ID", 400
     job = _jobs.get(job_id)
     if not job:
         return "Job not found", 404
@@ -1170,6 +1208,14 @@ def api_progress(job_id):
 
 @app.route("/api/download/<job_id>/<fmt>")
 def api_download(job_id, fmt):
+    """Download scan results as Excel or Markdown.
+
+    SECURITY: Validates job ID format and ensures the resolved file path
+    is within the expected OUTPUT_DIR to prevent path traversal attacks.
+    """
+    # SECURITY: Validate job ID format (hex only, prevents ../ traversal)
+    if not _is_valid_job_id(job_id):
+        return "Invalid job ID", 400
     job = _jobs.get(job_id)
     if not job or not job.get("result"):
         return "Job not found or not finished", 404
@@ -1186,6 +1232,13 @@ def api_download(job_id, fmt):
 
     if not path or not os.path.isfile(path):
         return "File not found", 404
+
+    # SECURITY: Verify the file is within the expected output directory
+    # to prevent serving arbitrary files from the filesystem.
+    real_path = os.path.realpath(path)
+    real_output = os.path.realpath(OUTPUT_DIR)
+    if not real_path.startswith(real_output + os.sep):
+        return "Access denied", 403
 
     return send_file(path, mimetype=mime, as_attachment=True,
                      download_name=os.path.basename(path))
