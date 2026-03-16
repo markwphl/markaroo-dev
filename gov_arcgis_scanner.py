@@ -214,7 +214,7 @@ GIS_LINK_KEYWORDS = [
 ]
 
 # ---------------------------------------------------------------------------
-# Tier 1 — Service Path Signals (per planning-layer-pattern-skill.md)
+# Tier 1 — Service Path Signals (per planning-layer-pattern-skill-v2.md)
 # ---------------------------------------------------------------------------
 
 # Department identifiers in service path (+5 confidence)
@@ -466,11 +466,11 @@ EXCLUDE_PATTERNS = [
 
 
 # ---------------------------------------------------------------------------
-# Dynamic keyword loading from planning-layer-pattern-skill.md
+# Dynamic keyword loading from planning-layer-pattern-skill-v2.md
 # ---------------------------------------------------------------------------
 
 # Path to the planning layer pattern skill document (in repo)
-_SKILL_DOC_PATH = os.path.join(os.path.dirname(__file__), "docs", "planning-layer-pattern-skill.md")
+_SKILL_DOC_PATH = os.path.join(os.path.dirname(__file__), "docs", "planning-layer-pattern-skill-v2.md")
 # Path to the ArcGIS REST crawler guide (in repo)
 _CRAWLER_GUIDE_PATH = os.path.join(os.path.dirname(__file__), "docs", "arcgis_rest_crawler_guide.md")
 
@@ -551,7 +551,7 @@ def _parse_cluster_keywords(md_text: str, cluster_label: str) -> list[str]:
 
 def reload_keywords_from_skill_doc():
     """
-    Re-read the planning-layer-pattern-skill.md and update the module-level
+    Re-read the planning-layer-pattern-skill-v2.md and update the module-level
     keyword lists. Called at the start of every scan so changes to the doc
     are picked up without restarting the server.
     """
@@ -1137,7 +1137,45 @@ _ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 # Default is claude-sonnet-4-6 (cost-effective for search tasks).
 _LLM_MODEL = os.environ.get("ARCGIS_SCANNER_MODEL", "claude-sonnet-4-6")
 
-_LLM_SEARCH_SYSTEM_PROMPT = """\
+def _build_llm_search_system_prompt() -> str:
+    """Build the LLM search system prompt, enriched with context from the
+    planning-layer-pattern-skill-v2.md document.  This gives the LLM
+    domain-specific vocabulary and URL structure patterns so it can craft
+    better search queries using the jurisdiction's name and URL reference."""
+
+    # Load planning doc context for search guidance
+    planning_context = ""
+    if os.path.isfile(_SKILL_DOC_PATH):
+        try:
+            with open(_SKILL_DOC_PATH, "r", encoding="utf-8") as f:
+                md = f.read()
+            # Extract the key sections the LLM needs for search context:
+            # URL structure patterns, Tier 1 tokens, and abbreviations
+            sections: list[str] = []
+            current_section = ""
+            capture = False
+            target_headings = [
+                "## 2. Tier 1",           # Service path signals
+                "## 6. URL Structure",     # URL patterns
+                "## 7. Named Abbreviations", # Acronyms
+                "## 10. Regional Terminology", # Regional terms
+            ]
+            for line in md.splitlines():
+                if line.strip().startswith("## "):
+                    if capture and current_section:
+                        sections.append(current_section)
+                    capture = any(h in line for h in target_headings)
+                    current_section = line + "\n" if capture else ""
+                elif capture:
+                    current_section += line + "\n"
+            if capture and current_section:
+                sections.append(current_section)
+            if sections:
+                planning_context = "\n".join(sections)
+        except OSError:
+            pass  # fall back to base prompt without planning context
+
+    base_prompt = """\
 You are a web search agent. Your sole task is to find the ArcGIS REST Services \
 Directory URL for a specific local government jurisdiction.
 
@@ -1172,12 +1210,23 @@ Secondary signals (promising but not sufficient alone):
 
 ## Instructions
 
-1. Search the web for the jurisdiction's ArcGIS REST Services Directory.
-2. Try multiple search queries if the first doesn't find it (e.g., include "GIS", \
+1. Search the web using the jurisdiction's FULL NAME and its WEBSITE DOMAIN \
+as primary search parameters.  For example, if the jurisdiction is "City of Dublin" \
+and the domain is "dublinohiousa.gov", search for:
+   - "dublinohiousa.gov arcgis rest services"
+   - "City of Dublin Ohio GIS map services"
+   - "dublinohiousa.gov GIS"
+   - "site:dublinohiousa.gov arcgis"
+2. Also try domain-variant searches using common GIS subdomains:
+   - "gis.dublinohiousa.gov", "maps.dublinohiousa.gov"
+3. Try multiple search queries if the first doesn't find it (e.g., include "GIS", \
 "ArcGIS", "rest services", "map services", the jurisdiction name).
-3. Examine search results for URLs matching the target patterns above.
-4. If you find a matching URL, verify it by fetching the page if possible.
-5. Report ALL matching ArcGIS REST Services Directory URLs you find.
+4. Search for the jurisdiction's planning/community development GIS pages, as \
+these often link to the ArcGIS REST directory.  Use department names like \
+"Planning", "Community Development", "ComDev", "CDD", "Land Development" in queries.
+5. Examine search results for URLs matching the target patterns above.
+6. If you find a matching URL, verify it by fetching the page if possible.
+7. Report ALL matching ArcGIS REST Services Directory URLs you find.
 
 ## Output Format
 
@@ -1191,6 +1240,22 @@ After your search, respond with ONLY a JSON object (no markdown fences):
 
 If you find NO matching URLs, set "found" to false and "urls" to an empty list.
 Do NOT fabricate or guess URLs. Only report URLs you actually found in search results."""
+
+    if planning_context:
+        base_prompt += f"""
+
+## Planning Layer Pattern Reference (from planning-layer-pattern-skill-v2.md)
+
+Use the following reference to understand common URL structures, service path \
+tokens, abbreviations, and regional terminology for government GIS services. \
+This will help you craft better search queries for the jurisdiction.
+
+{planning_context}"""
+
+    return base_prompt
+
+
+_LLM_SEARCH_SYSTEM_PROMPT = _build_llm_search_system_prompt()
 
 
 def llm_search_for_arcgis(jurisdiction_name: str, homepage_url: str = "",
@@ -1252,20 +1317,36 @@ def llm_search_for_arcgis(jurisdiction_name: str, homepage_url: str = "",
             return expand_single_service_urls(fast_results)
 
     # --- Tier 2: LLM Web Search (requires API key) ---
+    # Rebuild system prompt fresh so it picks up any planning doc changes
+    search_system_prompt = _build_llm_search_system_prompt()
     progress.log(f"Tier 2 — LLM web search for ArcGIS REST services: {jurisdiction_name}")
 
-    # Build the search prompt — domain hint helps the LLM narrow results
+    # Build the search prompt — jurisdiction name and URL are the primary
+    # search parameters, per planning-layer-pattern-skill-v2.md guidance.
     domain_hint = ""
+    domain_name = ""
     if homepage_url:
         parsed = urlparse(homepage_url)
-        domain_hint = f"\nTheir website domain is: {parsed.netloc}"
+        domain_name = parsed.netloc
+        domain_hint = (
+            f"\nTheir website domain is: {domain_name}\n"
+            f"Use this domain as a primary search parameter. Try searches like:\n"
+            f'  - "{domain_name} arcgis rest services"\n'
+            f'  - "site:{domain_name} arcgis"\n'
+            f'  - "gis.{domain_name}" and "maps.{domain_name}"\n'
+            f'  - "{jurisdiction_name} GIS map services"\n'
+            f'  - "{jurisdiction_name} planning community development GIS"'
+        )
 
     user_prompt = (
         f"Find the ArcGIS REST Services Directory for: {jurisdiction_name}\n"
         f"{domain_hint}\n\n"
-        f"Search for this jurisdiction's GIS/mapping services and locate their "
-        f"ArcGIS REST Services Directory URL (contains '/arcgis/rest/services' "
-        f"or similar pattern)."
+        f"IMPORTANT: Use the jurisdiction name '{jurisdiction_name}' and "
+        f"{'domain ' + repr(domain_name) if domain_name else 'common government domain patterns'} "
+        f"as your primary search parameters. Search for their GIS/mapping services "
+        f"and locate the ArcGIS REST Services Directory URL (contains "
+        f"'/arcgis/rest/services' or similar pattern). Also look for links on "
+        f"their Planning or Community Development department pages."
     )
 
     # SECURITY: The API key is passed directly to the SDK client and is
@@ -1283,7 +1364,7 @@ def llm_search_for_arcgis(jurisdiction_name: str, homepage_url: str = "",
             response = client.messages.create(
                 model=_LLM_MODEL,
                 max_tokens=4096,
-                system=_LLM_SEARCH_SYSTEM_PROMPT,
+                system=search_system_prompt,
                 tools=[
                     {"type": "web_search_20250305", "name": "web_search"},
                 ],
