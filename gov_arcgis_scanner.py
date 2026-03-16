@@ -2,17 +2,16 @@
 """
 Government ArcGIS Feature Layer Scanner
 ========================================
-Searches a local government website for ArcGIS REST Services Directory links,
-filters for planning/development-related feature layers, deduplicates, and
-exports results to Excel and Markdown.
+Discovers and catalogs GIS feature layers from local government ArcGIS REST
+Services directories, filters for planning/development-related layers,
+deduplicates, and exports results to Excel and Markdown.
 
 Designed to run from a private corporate intranet in production.
 
-## Architecture — Three-Tier ArcGIS Endpoint Discovery
--------------------------------------------------------
-When running in "homepage" or "gis_page" mode (Path B), the scanner uses
-a three-tier strategy to locate the jurisdiction's ArcGIS REST Services
-Directory URL:
+## Architecture — Two-Tier ArcGIS Endpoint Discovery
+------------------------------------------------------
+When running in "discovery" mode (Path B), the scanner uses a two-tier
+strategy to locate the jurisdiction's ArcGIS REST Services Directory URL:
 
   Tier 1 — Fast-Path Probe (FREE, no API cost)
       Tests common subdomain/path patterns (gis.<domain>, maps.<domain>,
@@ -21,29 +20,18 @@ Directory URL:
 
   Tier 2 — LLM Web Search (requires ANTHROPIC_API_KEY)
       If Tier 1 fails, calls the Claude API with the ``web_search`` server
-      tool.  Claude searches the public web for queries like
-      "City of Las Vegas ArcGIS REST services directory" and evaluates
-      the results against known URL patterns from the crawler guide.
-
-  Tier 3 — Mechanical Crawler Fallback (FREE, no API cost)
-      Activated automatically if:
-        • No ANTHROPIC_API_KEY environment variable is set, OR
-        • The ``anthropic`` Python package is not installed, OR
-        • The LLM search errors out or returns no results.
-      The fallback crawls the government website up to ``MAX_CRAWL_PAGES``
-      pages deep, following GIS-related links looking for ArcGIS REST URLs.
+      tool.  Claude searches the public web using the jurisdiction name and
+      URL patterns from ``docs/planning-layer-pattern-skill-v2.md`` to find
+      either the REST Services Directory URL or individual feature layer
+      URLs (from which the directory root is derived).
 
 ## Configurable Variables (update as needed)
 ---------------------------------------------
 The following module-level constants can be changed by your deployment team:
 
   REQUEST_TIMEOUT   — HTTP timeout per request (seconds).  Default: 20
-  MAX_CRAWL_PAGES   — Maximum pages the mechanical crawler will visit.
-                      Default: 120
   USER_AGENT        — Browser User-Agent header sent with every request.
   ARCGIS_REST_PATTERNS — Regex list used to recognise ArcGIS REST URLs.
-  GIS_LINK_KEYWORDS — Terms the crawler follows when deciding which
-                      hyperlinks lead toward GIS content.
   _LLM_MODEL        — Claude model ID used for web search (env var
                       ``ARCGIS_SCANNER_MODEL``).  Default: claude-sonnet-4-6
 
@@ -84,7 +72,6 @@ from urllib.parse import urljoin, urlparse
 
 import requests
 import urllib3
-from bs4 import BeautifulSoup
 
 # Suppress InsecureRequestWarning for government sites with bad SSL certs.
 # Many government servers have misconfigured or self-signed certificates;
@@ -189,7 +176,6 @@ def sanitize_jurisdiction_name(name: str) -> str:
 # and behaviour for your network environment.
 
 REQUEST_TIMEOUT = 20  # seconds — HTTP timeout per request
-MAX_CRAWL_PAGES = 120  # limit pages crawled on the government site
 # User-Agent header — UPDATE this to match your organisation's policy.
 # Some government servers block requests without a recognised browser UA.
 USER_AGENT = (
@@ -204,13 +190,6 @@ ARCGIS_REST_PATTERNS = [
     re.compile(r"https?://[^\s\"'<>]+/arcgis/rest/services", re.IGNORECASE),
     re.compile(r"https?://services\d*\.arcgis\.com/[A-Za-z0-9]+/ArcGIS/rest/services", re.IGNORECASE),
     re.compile(r"https?://[^\s\"'<>]+/rest/services(?:/|$)", re.IGNORECASE),
-]
-
-# Patterns for links that lead *toward* GIS / mapping content
-GIS_LINK_KEYWORDS = [
-    "gis", "map", "mapping", "interactive map", "webmap", "arcgis",
-    "geographic", "geospatial", "open data", "data hub", "hub",
-    "experience.arcgis.com", "arcgis.com",
 ]
 
 # ---------------------------------------------------------------------------
@@ -471,8 +450,7 @@ EXCLUDE_PATTERNS = [
 
 # Path to the planning layer pattern skill document (in repo)
 _SKILL_DOC_PATH = os.path.join(os.path.dirname(__file__), "docs", "planning-layer-pattern-skill-v2.md")
-# Path to the ArcGIS REST crawler guide (in repo)
-_CRAWLER_GUIDE_PATH = os.path.join(os.path.dirname(__file__), "docs", "arcgis_rest_crawler_guide.md")
+
 
 
 def _parse_keywords_from_table(md_text: str, section_heading: str) -> list[str]:
@@ -642,72 +620,6 @@ def reload_keywords_from_skill_doc():
         EXCLUDE_SERVICE_TOKENS = excl_svc
     if excl_lyr:
         EXCLUDE_LAYER_KEYWORDS = excl_lyr
-
-
-def load_crawler_guide() -> dict:
-    """
-    Load the ArcGIS REST crawler guide from the repo and return a config dict
-    with allowed_terms (list[str]) and exclusion_terms (list[str]).
-    """
-    config = {"allowed_terms": [], "exclusion_terms": [], "max_depth": 5, "max_pages": 75}
-
-    if not os.path.isfile(_CRAWLER_GUIDE_PATH):
-        return config
-
-    try:
-        with open(_CRAWLER_GUIDE_PATH, "r", encoding="utf-8") as f:
-            md = f.read()
-    except OSError:
-        return config
-
-    # Parse code-fenced term lists under each CATEGORY section
-    in_allowed = False
-    in_exclusion = False
-    in_code_block = False
-    current_section = ""
-
-    for line in md.splitlines():
-        stripped = line.strip()
-
-        # Track section headings
-        if stripped.startswith("## Allowed Terms Lists"):
-            in_allowed = True
-            in_exclusion = False
-            continue
-        if stripped.startswith("## Exclusion List"):
-            in_allowed = False
-            in_exclusion = True
-            continue
-        if stripped.startswith("## ") and not stripped.startswith("### "):
-            if stripped.startswith("## Allowed") or stripped.startswith("## Exclusion"):
-                pass
-            else:
-                in_allowed = False
-                in_exclusion = False
-            continue
-
-        # Track ENABLED flag
-        if "**ENABLED:**" in stripped:
-            if "`false`" in stripped.lower():
-                current_section = "disabled"
-            else:
-                current_section = "enabled"
-            continue
-
-        # Track code blocks
-        if stripped == "```":
-            in_code_block = not in_code_block
-            continue
-
-        # Collect terms from code blocks
-        if in_code_block and stripped and current_section != "disabled":
-            term = stripped.lower()
-            if in_allowed:
-                config["allowed_terms"].append(term)
-            elif in_exclusion:
-                config["exclusion_terms"].append(term)
-
-    return config
 
 
 # ---------------------------------------------------------------------------
@@ -954,136 +866,6 @@ def expand_single_service_urls(found_urls: set[str]) -> set[str]:
     return expanded
 
 
-def crawl_for_arcgis(start_url: str, interaction: InteractionRequest = None) -> set[str]:
-    """
-    Multi-step crawl using terms from docs/arcgis_rest_crawler_guide.md:
-      1. Scrape the start URL for ArcGIS links or GIS-related pages.
-      2. Follow only links matching allowed terms (not exclusion terms).
-      3. Collect all ArcGIS REST Services Directory root URLs found.
-      4. If max depth exhausted with no results, prompt user for next step.
-    """
-    # Load crawl configuration from the guide file
-    guide = load_crawler_guide()
-    crawl_keywords = list(set(GIS_LINK_KEYWORDS + guide["allowed_terms"]))
-    exclusion_terms = guide["exclusion_terms"]
-    max_depth = guide["max_depth"]
-    max_pages = guide["max_pages"]
-
-    progress.log(f"Loaded crawler guide: {len(guide['allowed_terms'])} allowed terms, "
-                 f"{len(exclusion_terms)} exclusion terms, "
-                 f"max depth {max_depth}, max pages {max_pages}")
-
-    progress.log(f"Starting crawl at {start_url}")
-    visited: set[str] = set()
-    to_visit: list[tuple[str, int]] = [(start_url, 0)]
-    found_rest_urls: set[str] = set()
-    base_domain = urlparse(start_url).netloc
-    pages_crawled = 0
-    max_depth_reached = False
-
-    while to_visit and pages_crawled < max_pages:
-        url, depth = to_visit.pop(0)
-        if url in visited:
-            continue
-        visited.add(url)
-        pages_crawled += 1
-
-        progress.log(f"  Crawling (depth {depth}/{max_depth}): {url[:80]}{'…' if len(url) > 80 else ''}")
-
-        resp = fetch(url)
-        if resp is None:
-            progress.log(f"    ✗ Could not reach page")
-            continue
-
-        text = resp.text
-
-        # Check for ArcGIS REST URLs in the page body
-        rest_urls = extract_arcgis_rest_urls(text)
-        if rest_urls:
-            progress.log(f"    ✓ Found ArcGIS REST endpoint(s) on this page")
-            found_rest_urls.update(rest_urls)
-
-        # If we haven't gone too deep, follow relevant links
-        if depth < max_depth:
-            soup = BeautifulSoup(text, "html.parser")
-            for a in soup.find_all("a", href=True):
-                href = a["href"]
-                link_text = (a.get_text() or "").lower()
-                full_url = urljoin(url, href)
-
-                # Check the raw href for ArcGIS REST patterns
-                rest_in_href = extract_arcgis_rest_urls(href) | extract_arcgis_rest_urls(full_url)
-                if rest_in_href:
-                    found_rest_urls.update(rest_in_href)
-                    continue
-
-                # Follow links that look relevant (same domain or arcgis.com)
-                parsed = urlparse(full_url)
-                is_same_domain = parsed.netloc == base_domain
-                is_arcgis = "arcgis.com" in parsed.netloc
-
-                if is_same_domain or is_arcgis:
-                    href_lower = full_url.lower() + " " + link_text
-                    # Skip links matching exclusion terms
-                    if exclusion_terms and any(ex in href_lower for ex in exclusion_terms):
-                        continue
-                    if any(kw in href_lower for kw in crawl_keywords):
-                        if full_url not in visited:
-                            to_visit.append((full_url, depth + 1))
-        else:
-            max_depth_reached = True
-
-    progress.stat("Pages crawled", pages_crawled)
-    progress.stat("ArcGIS REST endpoints found", len(found_rest_urls))
-
-    # If we exhausted max depth with no results, prompt the user
-    if not found_rest_urls and max_depth_reached and interaction:
-        progress.log(f"Crawl reached maximum depth ({max_depth} levels) without finding ArcGIS REST endpoints.")
-        choice = interaction.ask(
-            progress._callback,
-            f"The crawl reached {max_depth} levels deep without finding ArcGIS REST endpoints. What would you like to do?",
-            [
-                "Try common URL patterns (auto-guess)",
-                "Enter a different URL",
-                "Stop scan",
-            ],
-        )
-        if choice == "Stop scan":
-            progress.log("User chose to stop the scan.")
-            return expand_single_service_urls(found_rest_urls)
-        elif choice == "Enter a different URL":
-            progress.log("User chose to enter a different URL. Waiting for input…")
-            new_url = interaction.ask(
-                progress._callback,
-                "Enter a new URL to try (e.g. the ArcGIS REST services directory URL):",
-                [],  # free-text input
-            )
-            if new_url and new_url.strip():
-                new_url = new_url.strip()
-                progress.log(f"Trying user-provided URL: {new_url}")
-                rest_in_url = extract_arcgis_rest_urls(new_url)
-                if rest_in_url:
-                    found_rest_urls.update(rest_in_url)
-                else:
-                    # Treat the whole URL as a potential REST directory
-                    found_rest_urls.add(new_url)
-            return expand_single_service_urls(found_rest_urls)
-        else:
-            # Default: try guessing
-            progress.log("Trying common ArcGIS URL patterns…")
-            found_rest_urls = guess_arcgis_urls(start_url)
-            return expand_single_service_urls(found_rest_urls)
-
-    if not found_rest_urls:
-        progress.log("No ArcGIS REST endpoints discovered via crawl – trying common URL patterns")
-        found_rest_urls = guess_arcgis_urls(start_url)
-
-    # Expand any single-service URLs to the full directory root
-    found_rest_urls = expand_single_service_urls(found_rest_urls)
-
-    return found_rest_urls
-
-
 def guess_arcgis_urls(start_url: str) -> set[str]:
     """Tier 1 — Fast-path probe: test common ArcGIS hosting patterns.
 
@@ -1181,13 +963,16 @@ Directory URL for a specific local government jurisdiction.
 
 ## What You Are Looking For
 
-You are searching for a URL that contains one of these target patterns:
+You are searching for EITHER of these two things:
+
+### Option 1: ArcGIS REST Services Directory URL (preferred)
+A URL containing one of these patterns:
 - /arcgis/rest/services
 - /ArcGIS/rest/services
 - /server/rest/services
 - rest/services
 
-These are typically hosted at subdomains like:
+Typically hosted at subdomains like:
 - https://gis.<domain>/arcgis/rest/services
 - https://maps.<domain>/arcgis/rest/services
 - https://mapping.<domain>/arcgis/rest/services
@@ -1201,7 +986,21 @@ These are typically hosted at subdomains like:
 - https://<jurisdiction>.maps.arcgis.com
 - https://<jurisdiction>.hub.arcgis.com
 
-Secondary signals (promising but not sufficient alone):
+### Option 2: Individual Feature Layer URL (also acceptable!)
+If you cannot find the REST Services Directory root, finding ANY individual \
+FeatureServer or MapServer URL is also valuable. These look like:
+- https://services8.arcgis.com/<orgid>/ArcGIS/rest/services/<LayerName>/FeatureServer
+- https://gis.<domain>/arcgis/rest/services/<Folder>/<ServiceName>/MapServer
+- https://maps.<domain>/arcgis/rest/services/<ServiceName>/FeatureServer
+
+For example, searching for a jurisdiction's "Zoning" or "Parcels" layer might \
+return a URL like:
+  https://services8.arcgis.com/OPmRdssd8jj0bT5H/ArcGIS/rest/services/Zoning/FeatureServer
+
+This is useful because we can derive the REST directory root by truncating \
+at "/services/".
+
+### Secondary signals (promising but not sufficient alone)
 - arcgis.com/home, /arcgis/home, /portal/home
 - hub.arcgis.com, opendata.arcgis.com
 - /apps/webappviewer, /apps/mapviewer
@@ -1224,9 +1023,18 @@ and the domain is "dublinohiousa.gov", search for:
 4. Search for the jurisdiction's planning/community development GIS pages, as \
 these often link to the ArcGIS REST directory.  Use department names like \
 "Planning", "Community Development", "ComDev", "CDD", "Land Development" in queries.
-5. Examine search results for URLs matching the target patterns above.
-6. If you find a matching URL, verify it by fetching the page if possible.
-7. Report ALL matching ArcGIS REST Services Directory URLs you find.
+5. If you STILL haven't found the REST directory, search for specific feature \
+layer names combined with the jurisdiction name. Try:
+   - "<jurisdiction> zoning FeatureServer"
+   - "<jurisdiction> parcels arcgis"
+   - "<jurisdiction> land use MapServer"
+   - "<jurisdiction> planning GIS layers"
+These searches often surface individual feature layer URLs hosted on \
+services.arcgis.com or the jurisdiction's GIS server.
+6. Examine search results for URLs matching the target patterns above.
+7. If you find a matching URL, verify it by fetching the page if possible.
+8. Report ALL matching URLs you find — both REST directory roots AND individual \
+FeatureServer/MapServer layer URLs.
 
 ## Output Format
 
@@ -1237,6 +1045,10 @@ After your search, respond with ONLY a JSON object (no markdown fences):
   "confidence": "confirmed" or "probable" or "not_found",
   "notes": "Brief explanation of what you found"
 }
+
+Include ALL URLs you found — both REST directory roots and individual feature \
+layer URLs (FeatureServer, MapServer). We will extract the directory root from \
+feature layer URLs automatically.
 
 If you find NO matching URLs, set "found" to false and "urls" to an empty list.
 Do NOT fabricate or guess URLs. Only report URLs you actually found in search results."""
@@ -1258,13 +1070,16 @@ This will help you craft better search queries for the jurisdiction.
 _LLM_SEARCH_SYSTEM_PROMPT = _build_llm_search_system_prompt()
 
 
-def llm_search_for_arcgis(jurisdiction_name: str, homepage_url: str = "",
-                          interaction: InteractionRequest = None) -> set[str]:
+def llm_search_for_arcgis(jurisdiction_name: str, homepage_url: str = "") -> set[str]:
     """
-    Three-Tier ArcGIS endpoint discovery.
+    Two-Tier ArcGIS endpoint discovery.
 
     This is the main entry point for finding ArcGIS REST Services Directory
-    URLs when the user provides a jurisdiction homepage (Path B).
+    URLs when the user provides a jurisdiction name/homepage (Path B).
+
+    The LLM searches for EITHER the REST Services Directory URL OR individual
+    feature layer URLs (FeatureServer/MapServer).  When a feature layer URL
+    is found, the REST directory root is derived by truncating at '/services/'.
 
     Execution order:
       1. FAST-PATH PROBE (Tier 1) — tests common subdomain patterns like
@@ -1273,17 +1088,11 @@ def llm_search_for_arcgis(jurisdiction_name: str, homepage_url: str = "",
       2. LLM WEB SEARCH (Tier 2) — calls Claude API with the web_search
          server tool.  Requires ANTHROPIC_API_KEY env var and the
          ``anthropic`` Python package.
-      3. MECHANICAL CRAWLER FALLBACK (Tier 3) — crawls the government
-         website following GIS-related links.  Activated if:
-           • No API key is set
-           • anthropic package not installed
-           • LLM search errors out or returns no results
 
     Args:
         jurisdiction_name: Human-readable name (e.g. "City of Las Vegas").
             Sanitised internally before use.
         homepage_url: The jurisdiction's website URL.
-        interaction: Optional InteractionRequest for mid-scan user prompts.
 
     Returns:
         Set of discovered ArcGIS REST Services Directory root URLs.
@@ -1292,19 +1101,18 @@ def llm_search_for_arcgis(jurisdiction_name: str, homepage_url: str = "",
     # Only alphanumeric, spaces, hyphens, periods, apostrophes are allowed.
     jurisdiction_name = sanitize_jurisdiction_name(jurisdiction_name)
 
-    # --- Tier 3 Fallback Check: no API key ---
+    # --- Check: no API key ---
     if not _ANTHROPIC_API_KEY:
-        progress.log("No ANTHROPIC_API_KEY set — falling back to mechanical crawler")
-        return crawl_for_arcgis(homepage_url or f"https://www.{jurisdiction_name}.gov",
-                                interaction=interaction)
+        progress.log("ERROR: No ANTHROPIC_API_KEY set. Cannot perform LLM web search.")
+        progress.log("Please set the ANTHROPIC_API_KEY environment variable, or use "
+                      "Direct mode (Path A) with a known ArcGIS REST Services Directory URL.")
+        return set()
 
     try:
         import anthropic
     except ImportError:
-        # --- Tier 3 Fallback Check: package not installed ---
-        progress.log("anthropic package not installed — falling back to mechanical crawler")
-        return crawl_for_arcgis(homepage_url or f"https://www.{jurisdiction_name}.gov",
-                                interaction=interaction)
+        progress.log("ERROR: anthropic package not installed. Run: pip install anthropic")
+        return set()
 
     # --- Tier 1: Fast-path probe (FREE, no API cost) ---
     # Tests common subdomain patterns (gis., maps., etc.) directly.
@@ -1343,10 +1151,17 @@ def llm_search_for_arcgis(jurisdiction_name: str, homepage_url: str = "",
         f"{domain_hint}\n\n"
         f"IMPORTANT: Use the jurisdiction name '{jurisdiction_name}' and "
         f"{'domain ' + repr(domain_name) if domain_name else 'common government domain patterns'} "
-        f"as your primary search parameters. Search for their GIS/mapping services "
-        f"and locate the ArcGIS REST Services Directory URL (contains "
-        f"'/arcgis/rest/services' or similar pattern). Also look for links on "
-        f"their Planning or Community Development department pages."
+        f"as your primary search parameters.\n\n"
+        f"First, search for their ArcGIS REST Services Directory URL (contains "
+        f"'/arcgis/rest/services' or similar pattern).\n\n"
+        f"If you cannot find the directory root, also search for individual "
+        f"feature layers. Try queries like:\n"
+        f'  - "{jurisdiction_name} zoning FeatureServer"\n'
+        f'  - "{jurisdiction_name} parcels arcgis"\n'
+        f'  - "{jurisdiction_name} land use MapServer"\n'
+        f"Any FeatureServer or MapServer URL will help us locate the directory.\n\n"
+        f"Also look for links on their Planning or Community Development "
+        f"department pages."
     )
 
     # SECURITY: The API key is passed directly to the SDK client and is
@@ -1390,12 +1205,8 @@ def llm_search_for_arcgis(jurisdiction_name: str, homepage_url: str = "",
             break
 
     except Exception as e:
-        # --- Tier 3 Fallback: LLM error ---
         # SECURITY: Log only the error type/message, never the API key.
         progress.log(f"  Tier 2 — LLM search error: {e}")
-        if homepage_url:
-            progress.log("  Tier 3 — Falling back to mechanical crawler…")
-            return crawl_for_arcgis(homepage_url, interaction=interaction)
 
     # SECURITY: Validate all URLs returned by the LLM before using them.
     # Remove any that point to private/reserved IP ranges (SSRF protection)
@@ -1413,11 +1224,8 @@ def llm_search_for_arcgis(jurisdiction_name: str, homepage_url: str = "",
         for url in found_urls:
             progress.log(f"  ✓ {url}")
     else:
-        progress.log("Tier 2 — LLM search did not find any ArcGIS REST endpoints")
-        # --- Tier 3 Fallback: LLM returned no results ---
-        if homepage_url:
-            progress.log("Tier 3 — Falling back to mechanical crawler…")
-            return crawl_for_arcgis(homepage_url, interaction=interaction)
+        progress.log("Tier 2 — LLM search did not find any ArcGIS REST endpoints.")
+        progress.log("Try Direct mode (Path A) if you can locate the ArcGIS REST Services Directory URL manually.")
 
     return expand_single_service_urls(found_urls)
 
@@ -1452,6 +1260,14 @@ def _parse_llm_search_response(response, found_urls: set[str]):
         rest_urls = extract_arcgis_rest_urls(text)
         if rest_urls:
             found_urls.update(rest_urls)
+
+        # Also scan for individual FeatureServer/MapServer URLs
+        feature_pat = re.compile(
+            r"https?://[^\s\"'<>]+/rest/services/[^\s\"'<>]+/(?:Feature|Map)Server",
+            re.IGNORECASE,
+        )
+        for m in feature_pat.finditer(text):
+            found_urls.add(m.group(0).rstrip("/"))
 
 
 # ---------------------------------------------------------------------------
@@ -1869,16 +1685,15 @@ def scan(website_url: str, output_dir: str = ".", progress_callback=None,
          mode: str = "homepage", interaction: InteractionRequest = None,
          jurisdiction_name: str = "") -> dict:
     """
-    Full pipeline: validate → search/crawl → enumerate → filter → deduplicate → export.
+    Full pipeline: validate → discover → enumerate → filter → deduplicate → export.
 
     Args:
-        website_url: Root URL of the government website (or REST directory / GIS page).
+        website_url: Root URL of the government website (or REST directory).
         output_dir: Directory for output files.
         progress_callback: Optional callable(event_type, message) for live updates.
         mode: Workflow mode selected by user:
             "direct"   – URL is an ArcGIS REST Services Directory root (Path A).
-            "homepage" – URL is the jurisdiction's main website (Path B).
-            "gis_page" – URL is a GIS department / resources page (Path B).
+            "homepage" – URL is the jurisdiction's website (Path B: LLM discovery).
         interaction: Optional InteractionRequest for mid-scan user prompts.
         jurisdiction_name: Optional human-readable name (e.g., "City of Las Vegas").
             If empty, derived from the URL domain.
@@ -1934,12 +1749,10 @@ def scan(website_url: str, output_dir: str = ".", progress_callback=None,
         # SECURITY: Sanitise jurisdiction name before passing to LLM
         jurisdiction_name = sanitize_jurisdiction_name(jurisdiction_name)
 
-        label = "GIS department page" if mode == "gis_page" else "jurisdiction homepage"
-        progress.log(f"Search mode: finding ArcGIS endpoints for {jurisdiction_name} ({label})")
+        progress.log(f"Discovery mode: finding ArcGIS endpoints for {jurisdiction_name}")
         rest_urls = llm_search_for_arcgis(
             jurisdiction_name=jurisdiction_name,
             homepage_url=website_url,
-            interaction=interaction,
         )
 
     if not rest_urls:

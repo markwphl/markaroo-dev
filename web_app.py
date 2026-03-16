@@ -620,15 +620,8 @@ INDEX_HTML = r"""
       <label for="mode-homepage">
         <input type="radio" id="mode-homepage" name="scan-mode" value="homepage">
         <div class="radio-label-text">
-          <strong>Jurisdiction's Main Website</strong>
-          <span>I have the jurisdiction's homepage &mdash; scan will crawl for GIS endpoints</span>
-        </div>
-      </label>
-      <label for="mode-gispage">
-        <input type="radio" id="mode-gispage" name="scan-mode" value="gis_page">
-        <div class="radio-label-text">
-          <strong>GIS Resources Website</strong>
-          <span>I have the URL to the jurisdiction's GIS or open data resources website &mdash; scan will crawl for GIS endpoints</span>
+          <strong>Discover via Web Search</strong>
+          <span>I have the jurisdiction's name or website &mdash; AI will search the web for their GIS endpoints</span>
         </div>
       </label>
     </div>
@@ -739,11 +732,7 @@ const MODE_CONFIG = {
   },
   homepage: {
     placeholder: 'https://www.example.gov',
-    hint: 'Crawls the jurisdiction website to discover ArcGIS REST endpoints. Will follow GIS-related links up to 3 levels deep.'
-  },
-  gis_page: {
-    placeholder: 'https://www.example.gov/gis',
-    hint: 'Scans the GIS department page for ArcGIS REST endpoint links.'
+    hint: 'Uses AI-powered web search to discover ArcGIS REST endpoints for this jurisdiction.<br>Searches for the REST Services Directory URL or individual feature layer URLs, then derives the full directory.<br>Requires an Anthropic API key (ANTHROPIC_API_KEY environment variable).'
   }
 };
 
@@ -1127,7 +1116,7 @@ def api_scan():
     # SECURITY: Validate URL scheme — only http/https allowed
     if not url.startswith(("http://", "https://")):
         return jsonify({"error": "URL must start with http:// or https://"}), 400
-    if mode not in ("direct", "homepage", "gis_page"):
+    if mode not in ("direct", "homepage"):
         return jsonify({"error": "Invalid mode."}), 400
 
     job_id = uuid.uuid4().hex[:12]
