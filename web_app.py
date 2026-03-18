@@ -1118,6 +1118,9 @@ def api_scan():
         return jsonify({"error": "URL must start with http:// or https://"}), 400
     if mode not in ("direct", "homepage"):
         return jsonify({"error": "Invalid mode."}), 400
+    # Auto-detect direct mode from URL, same as CLI
+    if "/rest/services" in url.lower():
+        mode = "direct"
 
     job_id = uuid.uuid4().hex[:12]
     q: queue.Queue = queue.Queue()
