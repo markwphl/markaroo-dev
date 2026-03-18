@@ -860,24 +860,163 @@ def guess_arcgis_urls(start_url: str) -> set[str]:
     domain_parts = parsed.netloc.replace("www.", "").split(".")
     city_slug = domain_parts[0] if domain_parts else ""
 
+    # Strip "www." from netloc for subdomain probing
+    base_domain = parsed.netloc.replace("www.", "")
+
     candidates = [
-        f"https://gis.{parsed.netloc}/arcgis/rest/services",
-        f"https://maps.{parsed.netloc}/arcgis/rest/services",
+        f"https://gis.{base_domain}/arcgis/rest/services",
+        f"https://maps.{base_domain}/arcgis/rest/services",
+        f"https://mapping.{base_domain}/arcgis/rest/services",
+        f"https://gisweb.{base_domain}/arcgis/rest/services",
+        f"https://services.{base_domain}/arcgis/rest/services",
+        f"https://arcgis.{base_domain}/arcgis/rest/services",
+        f"https://webgis.{base_domain}/arcgis/rest/services",
+        f"https://egis.{base_domain}/arcgis/rest/services",
         f"https://{parsed.netloc}/arcgis/rest/services",
     ]
-    # Try ArcGIS Online services patterns (services1-9)
-    for i in range(1, 6):
-        candidates.append(
-            f"https://services{i}.arcgis.com/{city_slug}/ArcGIS/rest/services"
-        )
+    # Note: ArcGIS Online (services1-9.arcgis.com) org IDs are random
+    # alphanumeric strings, not derivable from the jurisdiction name.
+    # AGOL discovery requires the LLM search (Tier 2).
 
     found: set[str] = set()
     for url in candidates:
         resp = fetch(url, timeout=10)
-        if resp and resp.status_code == 200 and "services" in resp.text.lower():
+        if resp is None or resp.status_code != 200:
+            continue
+        # Validate that the endpoint actually contains services or folders —
+        # some ArcGIS servers return 200 with an empty services page
+        try:
+            data = resp.json()
+            has_content = data.get("services") or data.get("folders")
+        except (json.JSONDecodeError, ValueError):
+            # Not JSON — check for HTML services directory page
+            has_content = "rest/services" in resp.text.lower() and (
+                "MapServer" in resp.text or "FeatureServer" in resp.text
+            )
+        if has_content:
             progress.log(f"  Guessed valid endpoint: {url}")
             found.add(url)
     return found
+
+
+# ---------------------------------------------------------------------------
+# Tier 1.5 — ArcGIS Online (AGOL) content search
+# ---------------------------------------------------------------------------
+# Esri's public content search API lets us find a jurisdiction's GIS data
+# by searching for common layer names (zoning, parcels, land use) combined
+# with the jurisdiction name. This is free, deterministic, and more reliable
+# than LLM web search for AGOL-hosted jurisdictions.
+
+_AGOL_SEARCH_URL = "https://www.arcgis.com/sharing/rest/search"
+
+# Common planning layer names to search for — these are near-universal
+_AGOL_SEARCH_TERMS = ["zoning", "parcels", "land use"]
+
+
+def _search_agol_for_jurisdiction(jurisdiction_name: str) -> set[str]:
+    """Search ArcGIS Online for a jurisdiction's REST Services Directory.
+
+    Searches AGOL's public content API for Feature Services matching
+    the jurisdiction name + common planning keywords. Ranks results by
+    how closely the owner name matches the jurisdiction, then extracts
+    the REST directory root from the best match.
+    """
+    from urllib.parse import quote
+
+    # Build search terms from jurisdiction name
+    # Strip "City of", "County of" etc. for cleaner owner matching
+    name_words = [w for w in jurisdiction_name.lower().split()
+                  if w not in ("city", "of", "county", "town", "village", "the")]
+    name_key = "".join(name_words)  # e.g., "milpitas", "lasvegas"
+
+    owner_urls: dict[str, list[str]] = {}
+
+    for term in _AGOL_SEARCH_TERMS:
+        query = f'{jurisdiction_name} {term} type:"Feature Service"'
+        try:
+            resp = session.get(
+                _AGOL_SEARCH_URL,
+                params={"q": query, "f": "json", "num": 10},
+                timeout=10,
+            )
+            if resp.status_code != 200:
+                continue
+            data = resp.json()
+        except (requests.RequestException, json.JSONDecodeError, ValueError):
+            continue
+
+        for item in data.get("results", []):
+            owner = item.get("owner", "")
+            url = item.get("url", "")
+            if not owner or not url:
+                continue
+            if owner not in owner_urls:
+                owner_urls[owner] = []
+            owner_urls[owner].append(url)
+
+    if not owner_urls:
+        progress.log("  AGOL search returned no results")
+        return set()
+
+    # Build abbreviation variants for matching
+    # "Grand Prairie" → "gp", "grandprairie"
+    # "Las Vegas" → "lv", "lasvegas"
+    initials = "".join(w[0] for w in name_words if w)  # "gp", "lv"
+
+    # Rank owners by how well they match the jurisdiction
+    best_owner = None
+    best_score = -1
+
+    for owner, urls in owner_urls.items():
+        score = len(urls)  # frequency of results
+        owner_clean = owner.lower().replace("_", "").replace("-", "").replace(".", "")
+        # Also clean the email portion if present
+        owner_name = owner_clean.split("@")[0] if "@" in owner_clean else owner_clean
+
+        # Strong signal: full jurisdiction name appears in owner name
+        if name_key in owner_name:
+            score += 100
+        # Partial match on individual words (4+ chars to avoid false positives)
+        elif any(w in owner_name for w in name_words if len(w) > 3):
+            score += 50
+        # Abbreviation match: "gpgis" contains "gp" for "Grand Prairie"
+        # Require initials to be at least 2 chars and owner to contain "gis"
+        elif len(initials) >= 2 and initials in owner_name and "gis" in owner_name:
+            score += 60
+        # GIS-related owner names are more likely to be official
+        if "gis" in owner_name:
+            score += 10
+        # Email domain matching: gpgis@cityofgp.com → "cityofgp" contains "gp"
+        if "@" in owner_clean:
+            email_domain = owner_clean.split("@")[1].split(".")[0]
+            if name_key in email_domain or (len(initials) >= 2 and
+                    ("cityof" + initials) == email_domain):
+                score += 80
+
+        if score > best_score:
+            best_score = score
+            best_owner = owner
+
+    if best_score < 50:
+        # No confident match — jurisdiction name not found in any owner
+        progress.log(f"  AGOL search found results but no confident jurisdiction match "
+                     f"(best owner: {best_owner}, score: {best_score})")
+        return set()
+
+    urls = owner_urls[best_owner]
+    progress.log(f"  Found AGOL owner: {best_owner} ({len(urls)} layers)")
+
+    # Extract REST directory roots from the URLs
+    roots: set[str] = set()
+    for url in urls:
+        root = _normalize_rest_directory(url)
+        if root:
+            roots.add(root)
+
+    for root in roots:
+        progress.log(f"  ✓ {root}")
+
+    return roots
 
 
 # ---------------------------------------------------------------------------
@@ -1081,10 +1220,29 @@ def llm_search_for_arcgis(jurisdiction_name: str, homepage_url: str = "") -> set
     # Only alphanumeric, spaces, hyphens, periods, apostrophes are allowed.
     jurisdiction_name = sanitize_jurisdiction_name(jurisdiction_name)
 
-    # --- Check: no API key ---
+    # --- Tier 1: Fast-path probe (FREE, no API cost) ---
+    # Tests common subdomain patterns (gis., maps., etc.) directly.
+    # If any return a valid ArcGIS services page, we skip everything else.
+    if homepage_url:
+        progress.log("Tier 1 — Fast-path: probing common ArcGIS subdomains…")
+        fast_results = guess_arcgis_urls(homepage_url)
+        if fast_results:
+            progress.log(f"Tier 1 — Fast-path found {len(fast_results)} endpoint(s)")
+            return expand_single_service_urls(fast_results)
+
+    # --- Tier 1.5: ArcGIS Online search (FREE, no API cost) ---
+    # Search Esri's public AGOL content API for the jurisdiction's org.
+    # This is the most reliable method for AGOL-hosted jurisdictions.
+    progress.log("Tier 1.5 — Searching ArcGIS Online for jurisdiction data…")
+    agol_results = _search_agol_for_jurisdiction(jurisdiction_name)
+    if agol_results:
+        progress.log(f"Tier 1.5 — AGOL search found {len(agol_results)} endpoint(s)")
+        return expand_single_service_urls(agol_results)
+
+    # --- Tier 2: LLM Web Search (requires API key) ---
     if not _ANTHROPIC_API_KEY:
-        progress.log("ERROR: No ANTHROPIC_API_KEY set. Cannot perform LLM web search.")
-        progress.log("Please set the ANTHROPIC_API_KEY environment variable, or use "
+        progress.log("Tier 2 — No ANTHROPIC_API_KEY set. Cannot perform LLM web search.")
+        progress.log("Set the ANTHROPIC_API_KEY environment variable, or use "
                       "Direct mode (Path A) with a known ArcGIS REST Services Directory URL.")
         return set()
 
@@ -1093,16 +1251,6 @@ def llm_search_for_arcgis(jurisdiction_name: str, homepage_url: str = "") -> set
     except ImportError:
         progress.log("ERROR: anthropic package not installed. Run: pip install anthropic")
         return set()
-
-    # --- Tier 1: Fast-path probe (FREE, no API cost) ---
-    # Tests common subdomain patterns (gis., maps., etc.) directly.
-    # If any return a valid ArcGIS services page, we skip the LLM entirely.
-    if homepage_url:
-        progress.log("Tier 1 — Fast-path: probing common ArcGIS subdomains…")
-        fast_results = guess_arcgis_urls(homepage_url)
-        if fast_results:
-            progress.log(f"Tier 1 — Fast-path found {len(fast_results)} endpoint(s) — skipping LLM search")
-            return expand_single_service_urls(fast_results)
 
     # --- Tier 2: LLM Web Search (requires API key) ---
     # Rebuild system prompt fresh so it picks up any planning doc changes
@@ -1129,13 +1277,24 @@ def llm_search_for_arcgis(jurisdiction_name: str, homepage_url: str = "") -> set
     user_prompt = (
         f"Find the ArcGIS REST Services Directory for: {jurisdiction_name}\n"
         f"{domain_hint}\n\n"
-        f"IMPORTANT: Use the jurisdiction name '{jurisdiction_name}' and "
+        f"IMPORTANT: The results MUST be for {jurisdiction_name} specifically — "
+        f"not a neighboring city, county, or regional agency. Verify that any "
+        f"ArcGIS endpoint you find is operated by or contains data for "
+        f"{jurisdiction_name} before reporting it.\n\n"
+        f"Use the jurisdiction name '{jurisdiction_name}' and "
         f"{'domain ' + repr(domain_name) if domain_name else 'common government domain patterns'} "
         f"as your primary search parameters.\n\n"
-        f"First, search for their ArcGIS REST Services Directory URL (contains "
-        f"'/arcgis/rest/services' or similar pattern).\n\n"
-        f"If you cannot find the directory root, also search for individual "
-        f"feature layers. Try queries like:\n"
+        f"Search strategy:\n"
+        f"1. Search for the ArcGIS REST Services Directory URL (contains "
+        f"'/arcgis/rest/services' or similar pattern).\n"
+        f"2. Many jurisdictions host GIS data on ArcGIS Online (AGOL) at URLs like "
+        f"https://services[N].arcgis.com/[orgId]/ArcGIS/rest/services — search for "
+        f"'{jurisdiction_name} arcgis online' or '{jurisdiction_name} GIS hub' "
+        f"to find their AGOL organization.\n"
+        f"3. Search for their GIS hub page (e.g., {jurisdiction_name.replace(' ', '-').lower()}"
+        f"-gis.hub.arcgis.com or similar).\n"
+        f"4. If you cannot find the directory root, search for individual "
+        f"feature layers:\n"
         f'  - "{jurisdiction_name} zoning FeatureServer"\n'
         f'  - "{jurisdiction_name} parcels arcgis"\n'
         f'  - "{jurisdiction_name} land use MapServer"\n'
@@ -1203,11 +1362,87 @@ def llm_search_for_arcgis(jurisdiction_name: str, homepage_url: str = "") -> set
         progress.log(f"Tier 2 — LLM search found {len(found_urls)} ArcGIS REST endpoint(s)")
         for url in found_urls:
             progress.log(f"  ✓ {url}")
+
+        # Validate that the discovered endpoints belong to the target jurisdiction
+        # by checking if any service names reference the jurisdiction
+        validated_urls = _validate_jurisdiction_match(
+            found_urls, jurisdiction_name, homepage_url
+        )
+        if validated_urls:
+            found_urls = validated_urls
+        else:
+            progress.log("  ⚠ Could not confirm jurisdiction match — using all discovered URLs")
     else:
         progress.log("Tier 2 — LLM search did not find any ArcGIS REST endpoints.")
         progress.log("Try Direct mode (Path A) if you can locate the ArcGIS REST Services Directory URL manually.")
 
     return expand_single_service_urls(found_urls)
+
+
+def _validate_jurisdiction_match(
+    urls: set[str], jurisdiction_name: str, homepage_url: str
+) -> set[str] | None:
+    """Check if discovered ArcGIS endpoints belong to the target jurisdiction.
+
+    Fetches the services list from each URL and looks for the jurisdiction name
+    (or domain slug) in service names, descriptions, or the endpoint URL itself.
+    Returns the subset of URLs that match, or None if validation is inconclusive.
+    """
+    if not jurisdiction_name:
+        return None
+
+    # Build search terms from jurisdiction name and domain
+    search_terms = []
+    # Split jurisdiction name into significant words (skip "City", "of", "County")
+    for word in jurisdiction_name.lower().split():
+        if word not in ("city", "of", "county", "town", "village", "the"):
+            search_terms.append(word)
+
+    if homepage_url:
+        parsed = urlparse(homepage_url)
+        domain = parsed.netloc.replace("www.", "")
+        # Add the main domain slug (e.g., "milpitas" from "milpitas.gov")
+        slug = domain.split(".")[0]
+        if slug and len(slug) > 2:
+            search_terms.append(slug.lower())
+
+    if not search_terms:
+        return None
+
+    matched: set[str] = set()
+    for url in urls:
+        root = _normalize_rest_directory(url)
+
+        # Check if jurisdiction name appears in the URL itself
+        url_lower = url.lower()
+        if any(term in url_lower for term in search_terms):
+            matched.add(url)
+            continue
+
+        # Fetch services list and check names/descriptions
+        resp = fetch(f"{root}?f=json", timeout=10)
+        if resp is None:
+            continue
+        try:
+            data = resp.json()
+        except (json.JSONDecodeError, ValueError):
+            continue
+
+        # Check service names and folder names
+        text_to_check = " ".join(
+            svc.get("name", "") for svc in data.get("services", [])
+        ).lower()
+        text_to_check += " " + " ".join(data.get("folders", [])).lower()
+        # Also check the serviceDescription if available
+        text_to_check += " " + data.get("serviceDescription", "").lower()
+
+        if any(term in text_to_check for term in search_terms):
+            matched.add(url)
+            progress.log(f"  ✓ Confirmed jurisdiction match: {root}")
+        else:
+            progress.log(f"  ✗ No jurisdiction match in services at: {root}")
+
+    return matched if matched else None
 
 
 def _parse_llm_search_response(response, found_urls: set[str]):
@@ -1802,17 +2037,25 @@ def scan(website_url: str, output_dir: str = ".", progress_callback=None,
     print("  Government ArcGIS Feature Layer Scanner")
     print("=" * 60 + "\n")
 
-    # Step 0 – Validate URL
-    progress.log(f"Validating URL: {website_url}")
-    validation = validate_url(website_url, mode=mode)
-    if validation["valid"]:
-        progress.log(f"✓ URL is valid and reachable — {validation['message']}")
+    # Step 0 – Validate URL (skip if user provided only a jurisdiction name)
+    has_url = website_url and website_url.startswith(("http://", "https://"))
+    if has_url:
+        progress.log(f"Validating URL: {website_url}")
+        validation = validate_url(website_url, mode=mode)
+        if validation["valid"]:
+            progress.log(f"✓ URL is valid and reachable — {validation['message']}")
+        else:
+            progress.log(f"✗ URL validation failed — {validation['message']}")
+            if progress_callback:
+                progress_callback("error_msg", f"URL validation failed: {validation['message']}")
+            progress.summary()
+            return {"error": f"URL validation failed: {validation['message']}",
+                    "stats": dict(progress.stats)}
+    elif jurisdiction_name:
+        progress.log(f"Searching for: {jurisdiction_name}")
     else:
-        progress.log(f"✗ URL validation failed — {validation['message']}")
-        if progress_callback:
-            progress_callback("error_msg", f"URL validation failed: {validation['message']}")
         progress.summary()
-        return {"error": f"URL validation failed: {validation['message']}",
+        return {"error": "No URL or jurisdiction name provided.",
                 "stats": dict(progress.stats)}
 
     # Step 1 – find ArcGIS REST endpoints (skipped for "direct" mode)
@@ -1832,10 +2075,39 @@ def scan(website_url: str, output_dir: str = ".", progress_callback=None,
             parsed_url = urlparse(website_url)
             domain = parsed_url.netloc.replace("www.", "")
             # e.g., "cityoflasvegas.com" → "cityoflasvegas" → "city of las vegas"
-            jurisdiction_slug = domain.split(".")[0]
-            # Insert spaces before capital letters and replace common separators
+            #        "milpitas.gov" → "milpitas" → "City of Milpitas"
+            #        "co.surry.nc.us" → "co surry nc" → "Surry County"
+            # Strip TLD and common suffixes to get the jurisdiction slug
+            # e.g., "milpitas.gov" → "milpitas", "co.surry.nc.us" → "co.surry.nc"
+            #        "cityoflasvegas.com" → "cityoflasvegas"
+            for suffix in [".gov", ".us", ".org", ".com", ".net"]:
+                if domain.endswith(suffix):
+                    domain = domain[: -len(suffix)]
+                    break
+            # Remove state codes (2-letter segments) from multi-part domains
+            # e.g., "sunnyvale.ca" → "sunnyvale", "co.surry.nc" → "co.surry"
+            _US_STATES = {
+                "al", "ak", "az", "ar", "ca", "co", "ct", "de", "fl", "ga",
+                "hi", "id", "il", "in", "ia", "ks", "ky", "la", "me", "md",
+                "ma", "mi", "mn", "ms", "mo", "mt", "ne", "nv", "nh", "nj",
+                "nm", "ny", "nc", "nd", "oh", "ok", "or", "pa", "ri", "sc",
+                "sd", "tn", "tx", "ut", "vt", "va", "wa", "wv", "wi", "wy",
+            }
+            # Keep "co" (county prefix) but remove state codes
+            parts = [p for p in domain.split(".")
+                     if p.lower() not in _US_STATES or p.lower() == "co"]
+            jurisdiction_slug = " ".join(parts)
+            jurisdiction_slug = jurisdiction_slug.replace("-", " ").replace("_", " ")
+            # Insert spaces before capital letters (e.g., "cityoflasvegas" → "cityof las vegas")
             jurisdiction_name = re.sub(r"([a-z])([A-Z])", r"\1 \2", jurisdiction_slug)
-            jurisdiction_name = jurisdiction_name.replace("-", " ").replace("_", " ")
+            # Expand common prefixes
+            jurisdiction_name = re.sub(r"\bco\b", "County of", jurisdiction_name, flags=re.IGNORECASE)
+            jurisdiction_name = re.sub(r"\bcityof\b", "City of", jurisdiction_name, flags=re.IGNORECASE)
+            # If it's a single word (like "milpitas"), prepend "City of"
+            words = jurisdiction_name.strip().split()
+            if len(words) == 1 and not any(w in jurisdiction_name.lower() for w in ["county", "city", "town"]):
+                jurisdiction_name = f"City of {jurisdiction_name}"
+            jurisdiction_name = jurisdiction_name.strip().title()
 
         # SECURITY: Sanitise jurisdiction name before passing to LLM
         jurisdiction_name = sanitize_jurisdiction_name(jurisdiction_name)
@@ -1843,7 +2115,7 @@ def scan(website_url: str, output_dir: str = ".", progress_callback=None,
         progress.log(f"Discovery mode: finding ArcGIS endpoints for {jurisdiction_name}")
         rest_urls = llm_search_for_arcgis(
             jurisdiction_name=jurisdiction_name,
-            homepage_url=website_url,
+            homepage_url=website_url if has_url else "",
         )
 
     if not rest_urls:
@@ -1881,9 +2153,12 @@ def scan(website_url: str, output_dir: str = ".", progress_callback=None,
     # Step 5 – output
     os.makedirs(output_dir, exist_ok=True)
 
-    domain = urlparse(website_url).netloc.replace("www.", "").split(".")[0]
-    md_path = os.path.join(output_dir, f"{domain}_feature_layers.md")
-    xl_path = os.path.join(output_dir, f"{domain}_feature_layers.xlsx")
+    if has_url:
+        file_slug = urlparse(website_url).netloc.replace("www.", "").split(".")[0]
+    else:
+        file_slug = re.sub(r"[^a-z0-9]+", "_", jurisdiction_name.lower()).strip("_")
+    md_path = os.path.join(output_dir, f"{file_slug}_feature_layers.md")
+    xl_path = os.path.join(output_dir, f"{file_slug}_feature_layers.xlsx")
 
     write_markdown(final_layers, md_path)
     write_excel(final_layers, xl_path)
@@ -1913,8 +2188,9 @@ def main():
         description="Scan a local government website for ArcGIS planning/development feature layers."
     )
     parser.add_argument(
-        "url",
-        help="Root URL of the local government website (e.g. https://www.dublinohiousa.gov)",
+        "input",
+        help="ArcGIS REST URL, jurisdiction website URL, or jurisdiction name "
+             "(e.g. 'https://gis.example.gov/arcgis/rest/services' or 'City of Sunnyvale')",
     )
     parser.add_argument(
         "-o", "--output-dir",
@@ -1925,20 +2201,28 @@ def main():
         "-m", "--mode",
         choices=["direct", "homepage"],
         default=None,
-        help="Scan mode: 'direct' for ArcGIS REST URL, 'homepage' for LLM discovery. "
-             "Auto-detected from URL if not specified.",
+        help="Scan mode: 'direct' for ArcGIS REST URL, 'homepage' for discovery. "
+             "Auto-detected from input if not specified.",
     )
     args = parser.parse_args()
 
-    # Auto-detect mode from URL if not explicitly set
+    user_input = args.input
+    is_url = user_input.startswith(("http://", "https://"))
+
+    # Auto-detect mode
     mode = args.mode
     if mode is None:
-        if "/rest/services" in args.url.lower():
+        if is_url and "/rest/services" in user_input.lower():
             mode = "direct"
         else:
             mode = "homepage"
 
-    result = scan(args.url, args.output_dir, mode=mode)
+    # Determine URL vs jurisdiction name
+    url = user_input if is_url else ""
+    jurisdiction_name = "" if is_url else user_input
+
+    result = scan(url, args.output_dir, mode=mode,
+                  jurisdiction_name=jurisdiction_name)
     if result.get("error"):
         sys.exit(1)
 
