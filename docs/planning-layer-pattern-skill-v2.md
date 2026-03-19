@@ -213,7 +213,7 @@ These patterns are excluded regardless of service path, Tier 1 boost, or any oth
 **Annotation and label classes:**
 `*anno*`, `annotation_*`, `lot_anno*`, `*_anno_*`, `*Labels*`, `HWY LABELS`, `*label*`
 
-**Platform-internal geometry objects (EnerGov and similar):**
+**Platform-internal geometry objects:**
 `History Point*`, `HistoryPolygon*`, `Spatial Polyline*`, `SpatialCollectionPolyline*`, `Location` (exact match — generic geometry record), `Converted_Graphics*`, `Feature.MAPREAD.*`, `CityWide.SDE.* ,  'Spatial*', 'Spatial_Collection', 'Library Card*', 'Hisory Polygon', 'SpatialCollectionPoint', 'SpatialCollecitonPolygon'
 
 **Generic/ambiguous layer names:**
