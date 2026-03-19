@@ -606,22 +606,22 @@ INDEX_HTML = r"""
   <!-- Input -->
   <div class="input-card">
     <div class="context-bar">
-      <span>Pick a search option and insert the applicable URL below.</span>
+      <span>Find planning GIS layers for a jurisdiction.</span>
     </div>
 
     <div class="radio-group" id="mode-group">
       <label class="selected" for="mode-direct">
         <input type="radio" id="mode-direct" name="scan-mode" value="direct" checked>
         <div class="radio-label-text">
-          <strong>ArcGIS REST Services Directory</strong>
-          <span>I have the root URL to the jurisdiction's ArcGIS REST services directory</span>
+          <strong>I have the ArcGIS URL</strong>
+          <span>Paste a REST Services Directory or MapServer/FeatureServer URL</span>
         </div>
       </label>
       <label for="mode-homepage">
         <input type="radio" id="mode-homepage" name="scan-mode" value="homepage">
         <div class="radio-label-text">
-          <strong>Discover via Web Search</strong>
-          <span>I have the jurisdiction's name or website &mdash; AI will search the web for their GIS endpoints</span>
+          <strong>Find it for me</strong>
+          <span>Enter a jurisdiction name or website URL</span>
         </div>
       </label>
     </div>
@@ -636,7 +636,7 @@ INDEX_HTML = r"""
     </form>
     <div id="url-feedback"></div>
   </div>
-  <p class="hint" id="hint-text">The tool finds GIS layers from the client's published directory of ArcGIS REST services (API endpoints).<br>Only GIS layers found to be applicable to the Planning knowledge domain are enumerated (with effort to remove duplicates) and output to a table.<br>Double check this list with your client for the correct feature layers and endpoint URLs.</p>
+  <p class="hint" id="hint-text">Verify the output with your client for the correct feature layers and endpoint URLs.</p>
 
   <!-- Status -->
   <div id="status-line"></div>
@@ -728,11 +728,11 @@ function resetStatusCycle() {
 const MODE_CONFIG = {
   direct: {
     placeholder: 'https://gis.example.gov/arcgis/rest/services',
-    hint: 'The tool finds GIS layers from the client\'s published directory of ArcGIS REST services (API endpoints).<br>Only GIS layers found to be applicable to the Planning knowledge domain are enumerated (with effort to remove duplicates) and output to a table.<br>Double check this list with your client for the correct feature layers and endpoint URLs.'
+    hint: 'Verify the output with your client for the correct feature layers and endpoint URLs.'
   },
   homepage: {
-    placeholder: 'https://www.example.gov',
-    hint: 'Uses AI-powered web search to discover ArcGIS REST endpoints for this jurisdiction.<br>Searches for the REST Services Directory URL or individual feature layer URLs, then derives the full directory.<br>Requires an Anthropic API key (ANTHROPIC_API_KEY environment variable).'
+    placeholder: 'City of Sunnyvale',
+    hint: 'Enter a jurisdiction name (e.g. "City of Sunnyvale") or a website URL (e.g. "https://www.sunnyvale.ca.gov").'
   }
 };
 
@@ -904,8 +904,10 @@ form.addEventListener('submit', async (e) => {
   let url = document.getElementById('url-input').value.trim();
   if (!url) return;
 
-  // Auto-prepend https:// if missing
-  if (!url.startsWith('http://') && !url.startsWith('https://')) {
+  // Auto-prepend https:// if missing — but only in direct mode.
+  // In discovery mode, bare text is a jurisdiction name, not a URL.
+  const currentMode = getSelectedMode();
+  if (currentMode === 'direct' && !url.startsWith('http://') && !url.startsWith('https://')) {
     url = 'https://' + url;
     document.getElementById('url-input').value = url;
   }
@@ -1089,16 +1091,21 @@ def index():
 
 @app.route("/api/validate", methods=["POST"])
 def api_validate():
-    """Pre-validate a URL before starting a scan."""
+    """Pre-validate a URL or jurisdiction name before starting a scan."""
     data = request.get_json(force=True)
-    url = (data.get("url") or "").strip()
+    user_input = (data.get("url") or "").strip()
     mode = (data.get("mode") or "homepage").strip()
-    if not url:
-        return jsonify({"valid": False, "message": "URL is required."})
-    # SECURITY: Enforce URL length limit
-    if len(url) > _MAX_INPUT_URL_LENGTH:
-        return jsonify({"valid": False, "message": "URL is too long."})
-    result = validate_url(url, mode=mode)
+    if not user_input:
+        return jsonify({"valid": False, "message": "Input is required."})
+    # SECURITY: Enforce input length limit
+    if len(user_input) > _MAX_INPUT_URL_LENGTH:
+        return jsonify({"valid": False, "message": "Input is too long."})
+    # In discovery mode, accept plain jurisdiction names
+    if mode == "homepage" and not user_input.startswith(("http://", "https://")):
+        return jsonify({"valid": True,
+                        "message": f"Will search for: {user_input}",
+                        "status_code": None})
+    result = validate_url(user_input, mode=mode)
     return jsonify(result)
 
 
@@ -1106,18 +1113,29 @@ def api_validate():
 def api_scan():
     """Start a new scan job.  Validates inputs before launching."""
     data = request.get_json(force=True)
-    url = (data.get("url") or "").strip()
+    user_input = (data.get("url") or "").strip()
     mode = (data.get("mode") or "homepage").strip()
-    if not url:
-        return jsonify({"error": "URL is required."}), 400
-    # SECURITY: Enforce URL length limit
-    if len(url) > _MAX_INPUT_URL_LENGTH:
-        return jsonify({"error": "URL is too long."}), 400
-    # SECURITY: Validate URL scheme — only http/https allowed
-    if not url.startswith(("http://", "https://")):
-        return jsonify({"error": "URL must start with http:// or https://"}), 400
+    if not user_input:
+        return jsonify({"error": "Input is required."}), 400
+    # SECURITY: Enforce input length limit
+    if len(user_input) > _MAX_INPUT_URL_LENGTH:
+        return jsonify({"error": "Input is too long."}), 400
     if mode not in ("direct", "homepage"):
         return jsonify({"error": "Invalid mode."}), 400
+
+    # In discovery mode, accept either a URL or a plain jurisdiction name
+    url = user_input
+    jurisdiction_name = ""
+    if mode == "homepage" and not user_input.startswith(("http://", "https://")):
+        # User entered a jurisdiction name, not a URL — pass it directly
+        jurisdiction_name = user_input
+        url = ""  # no URL to validate
+    elif not user_input.startswith(("http://", "https://")):
+        return jsonify({"error": "URL must start with http:// or https://"}), 400
+
+    # Auto-detect direct mode from URL, same as CLI
+    if url and "/rest/services" in url.lower():
+        mode = "direct"
 
     job_id = uuid.uuid4().hex[:12]
     q: queue.Queue = queue.Queue()
@@ -1131,8 +1149,10 @@ def api_scan():
     def run():
         try:
             job_output_dir = os.path.join(OUTPUT_DIR, job_id)
-            result = scan(url, output_dir=job_output_dir, progress_callback=progress_cb,
-                          mode=mode, interaction=interaction)
+            result = scan(url, output_dir=job_output_dir,
+                          progress_callback=progress_cb,
+                          mode=mode, interaction=interaction,
+                          jurisdiction_name=jurisdiction_name)
             _jobs[job_id]["result"] = result
             _jobs[job_id]["status"] = "done"
             q.put(("done", json.dumps({

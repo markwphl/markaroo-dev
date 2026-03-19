@@ -305,10 +305,22 @@ CLUSTER_D = [
 
 # Cluster E: Environmental Overlay (Planning-Regulated)
 CLUSTER_E = [
-    "stream margin", "wildfire hazard", "wui", "wildland-urban interface",
+    "stream margin", "wildfire hazard", "wildfire district", "wildfire zone",
+    "wildfire buffer", "fire zone", "fire buffer",
+    "wui", "wildland-urban interface",
     "esa", "environmentally sensitive", "hallam bluff", "non attainment",
+    "wetlands", "wetland buffer", "riparian buffer", "riparian zone",
+    "riparian corridor", "watershed",
+    "flood zone", "floodplain", "floodway", "flood plain",
+    "fema flood", "fema floodplain",
+    "100 year flood", "100-year flood", "500 year flood", "500-year flood",
+    "100 year floodway", "special flood hazard area", "sfha",
+    "flood zone parcels",
     "tree preservation", "tree canopy", "agricultural buffer",
-    "conservation easement", "floodplain", "flood zone",
+    "conservation easement",
+    "earthquake zone", "seismic zone", "seismic hazard",
+    "tsunami zone", "tsunami hazard", "liquefaction zone",
+    "steep slope", "slope hazard", "landslide zone", "geologic hazard",
     # Regional
     "npdes buffer", "flood administration", "view corridor", "viewshed",
     "water rights overlay", "dark sky", "ceqa overlay",
@@ -323,13 +335,25 @@ CLUSTER_F = [
     "section township range", "address",
 ]
 
-# Cluster G: Administrative Geography
+# Cluster G: Administrative Boundaries
 CLUSTER_G = [
     "neighborhoods", "neighborhood", "neighborhood boundary",
-    "city limits", "wards", "council wards", "city boundary",
-    "municipal boundary", "sphere of influence",
+    "neighborhood association",
+    "city limits", "city boundary", "municipal boundary", "municipalities",
+    "county boundary", "adjacent counties",
+    "council districts", "wards", "council wards",
+    "zip codes", "zipcodes", "zip code boundaries",
+    "census tracts", "voting districts", "election districts",
+    "school districts", "school catchment", "school attendance zone",
+    "school district", "elementary school district",
+    "middle school district", "high school district",
+    "township", "townships",
     "etj", "extraterritorial jurisdiction",
-    "township", "greenway",
+    "sphere of influence", "urban growth boundary",
+    "metro",
+    "public owned land",
+    "fire districts", "fire response districts", "fire tax districts",
+    "greenway",
     "planning area",
 ]
 
@@ -346,22 +370,30 @@ CLUSTER_H = [
 
 # Cluster I: Hazards and Development Restrictions
 CLUSTER_I = [
-    "floodplain", "flood plain", "flood zone", "floodway", "flood area",
+    "floodplain", "flood plain", "flood zone", "floodway", "floodways",
+    "floodway channels", "floodway creeks", "flood area",
     "100 year flood", "100-year flood", "100 year floodway",
     "500 year flood", "500-year flood",
-    "fema flood", "fema floodplain", "special flood hazard area", "sfha", "firm",
+    "fema flood", "fema floodplain", "fema firm",
+    "special flood hazard area", "sfha", "firm",
     "fire zone", "fire hazard", "fire buffer",
     "wildfire", "wildfire district", "wildfire zone", "wildfire hazard", "wui",
     "earthquake zone", "seismic zone", "seismic hazard",
-    "liquefaction", "tsunami zone", "tsunami hazard", "geologic hazard",
-    "steep slope", "slope restriction", "slope overlay", "landslide", "erosion zone",
-    "contour", "10 foot contour", "100 foot contour", "topo contour",
+    "liquefaction", "liquefaction zone", "tsunami zone", "tsunami hazard",
+    "geologic hazard",
+    "steep slope", "slope restriction", "slope hazard", "slope overlay",
+    "landslide", "landslide zone", "erosion zone",
+    "contour", "contours", "10 foot contour", "100 foot contour", "topo contour",
     "wetlands", "wetland buffer", "wetland setback",
     "riparian buffer", "riparian zone", "riparian corridor",
     "stream buffer", "stream setback", "river buffer", "waterbody setback",
-    "rivers", "streams", "ponds", "lakes", "waterbodies", "water bodies", "hydrology",
+    "rivers", "streams", "ponds", "lakes", "waterbodies", "water bodies",
+    "watersheds", "hydrology",
     "conservation easement", "easement",
-    "agricultural district", "right to farm", "rtf zone", "rtf district", "farm buffer",
+    "agricultural district", "voluntary agricultural",
+    "voluntary agricultural parcels half mile buffer",
+    "right to farm", "rtf zone", "rtf district", "farm buffer",
+    "non attainment",
 ]
 
 # Cluster J: Landmarks and Civic Features (supporting only — requires co-occurring signal)
@@ -410,8 +442,10 @@ EXCLUDE_LAYER_KEYWORDS = [
     "street sweeping", "guardrails", "handicap ramps", "street lights",
     "traffic signal", "truck routes", "crossroads", "street centerlines",
     "road closures",
-    # Fire / Emergency
-    "fire map", "phantoms", "emergency", "ems", "fire districts",
+    # Fire / Emergency (note: "fire districts", "fire response districts",
+    # "fire tax districts" are planning reference boundaries — NOT excluded here.
+    # They are excluded only when in a Fire service folder via service-path exclusion.)
+    "fire map", "phantoms", "emergency", "ems",
     "fire pre plan", "fire run", "fire stations", "fire incidents",
     "fire hydrants", "fire water points",
     # Business License
@@ -444,138 +478,118 @@ EXCLUDE_PATTERNS = [
 ]
 
 
-# ---------------------------------------------------------------------------
-# Dynamic keyword loading from planning-layer-pattern-skill-v2.md
-# ---------------------------------------------------------------------------
-
-# Path to the planning layer pattern skill document (in repo)
+# Path to the planning layer pattern skill document (used by LLM search prompt
+# and as the canonical source for keyword lists)
 _SKILL_DOC_PATH = os.path.join(os.path.dirname(__file__), "docs", "planning-layer-pattern-skill-v2.md")
 
 
+# ---------------------------------------------------------------------------
+# Load keywords from planning-layer-pattern-skill-v2.md
+# ---------------------------------------------------------------------------
+# The planning doc is the canonical source of truth for all keyword lists.
+# The hardcoded lists above are fallbacks in case the doc is missing.
 
-def _parse_keywords_from_table(md_text: str, section_heading: str) -> list[str]:
-    """Extract tokens from a markdown table under a given heading.
-    Looks for the first column (Token/Pattern) values."""
-    keywords: list[str] = []
-    in_section = False
-    in_table = False
-    for line in md_text.splitlines():
-        stripped = line.strip()
-        # Track headings
-        if stripped.startswith("#"):
-            if section_heading.lower() in stripped.lower():
-                in_section = True
-                in_table = False
-                continue
-            elif in_section and stripped.startswith("#"):
-                # Hit next section at same or higher level
-                in_section = False
-                in_table = False
-                continue
-        if not in_section:
-            continue
-        # Detect table rows (skip header separator)
-        if stripped.startswith("|") and not stripped.startswith("|---"):
-            cols = [c.strip() for c in stripped.split("|")]
-            cols = [c for c in cols if c]  # remove empty from leading/trailing |
-            if len(cols) >= 1:
-                token = cols[0]
-                # Skip header row
-                if token.lower() in ("token", "token / pattern", "layer name",
-                                      "abbreviation", "term", "signal"):
-                    continue
-                # Clean up: remove backticks, markdown formatting
-                token = token.replace("`", "").replace("*", "").strip()
-                if not token:
-                    continue
-                # Split on " / " for multi-variant entries (e.g. "Zoning / ZONING")
-                # and on " or " for alternatives
-                variants = re.split(r"\s*/\s*|\s+or\s+", token)
-                for v in variants:
-                    v = v.strip().lower()
-                    # Remove regex-style wildcards and parenthetical notes
-                    v = re.sub(r"\(.*?\)", "", v).strip()
-                    v = re.sub(r"\.\*", "", v).strip()
-                    if v and len(v) > 1:
-                        keywords.append(v)
+def _parse_backtick_keywords(line: str) -> list[str]:
+    """Extract backtick-delimited keywords from a line like:
+    Keywords: `Foo`, `Bar Baz`, `Qux` (note text)
+    Returns lowercased keywords with regex wildcards (.*) replaced by spaces
+    and parenthetical notes stripped.
+    """
+    keywords = []
+    for match in re.finditer(r"`([^`]+)`", line):
+        kw = match.group(1)
+        # Strip parenthetical notes like "(when in planning context)"
+        kw = re.sub(r"\s*\(.*?\)\s*", "", kw).strip()
+        # Replace regex wildcards with space for substring matching
+        kw = kw.replace(".*", " ").strip()
+        if kw and len(kw) > 1:
+            keywords.append(kw.lower())
     return keywords
 
 
-def _parse_cluster_keywords(md_text: str, cluster_label: str) -> list[str]:
-    """Extract keywords from a Cluster paragraph like 'Cluster A: ...'
-    Keywords are listed after 'Keywords:' as comma-separated values."""
-    keywords: list[str] = []
-    in_cluster = False
-    for line in md_text.splitlines():
-        stripped = line.strip()
-        if cluster_label.lower() in stripped.lower() and stripped.startswith("#"):
-            in_cluster = True
-            continue
-        if in_cluster:
-            if stripped.startswith("#"):
-                break  # next section
-            if "keywords:" in stripped.lower():
-                # Parse comma-separated keywords after "Keywords:"
-                kw_part = stripped.split(":", 1)[1] if ":" in stripped else stripped
-                for kw in kw_part.split(","):
-                    kw = kw.strip().strip("`").strip("*").strip()
-                    # Remove regex-style patterns and parenthetical notes
-                    kw = re.sub(r"\(.*?\)", "", kw).strip()
-                    kw = re.sub(r"\.\*", " ", kw).strip()
-                    if kw and len(kw) > 1:
-                        keywords.append(kw.lower())
-    return keywords
-
-
-def reload_keywords_from_skill_doc():
-    """
-    Re-read the planning-layer-pattern-skill-v2.md and update the module-level
-    keyword lists. Called at the start of every scan so changes to the doc
-    are picked up without restarting the server.
-    """
-    global TIER1_DEPARTMENT_TOKENS, TIER1_LANDUSE_TOKENS, TIER1_DEVELOPMENT_TOKENS
-    global SERVICE_KEYWORDS
-    global CLUSTER_A, CLUSTER_B, CLUSTER_C, CLUSTER_D, CLUSTER_E, CLUSTER_F
-    global CLUSTER_G, CLUSTER_H, CLUSTER_I, CLUSTER_J, LAYER_KEYWORDS
+def _load_keywords_from_doc():
+    """Parse the planning doc and update module-level keyword lists.
+    Called once at module load time."""
+    global CLUSTER_A, CLUSTER_B, CLUSTER_C, CLUSTER_D, CLUSTER_E
+    global CLUSTER_F, CLUSTER_G, CLUSTER_H, CLUSTER_I, CLUSTER_J
+    global LAYER_KEYWORDS
     global EXCLUDE_SERVICE_TOKENS, EXCLUDE_LAYER_KEYWORDS
 
     if not os.path.isfile(_SKILL_DOC_PATH):
-        return  # file not found — keep existing hardcoded defaults
+        return
 
     try:
         with open(_SKILL_DOC_PATH, "r", encoding="utf-8") as f:
             md = f.read()
     except OSError:
-        return  # read error — keep defaults
+        return
 
-    # --- Tier 1: Service path tokens ---
-    dept = _parse_keywords_from_table(md, "Explicit Department Identifiers")
-    if dept:
-        TIER1_DEPARTMENT_TOKENS = dept
+    cluster_map = {
+        "cluster a": "CLUSTER_A", "cluster b": "CLUSTER_B",
+        "cluster c": "CLUSTER_C", "cluster d": "CLUSTER_D",
+        "cluster e": "CLUSTER_E", "cluster f": "CLUSTER_F",
+        "cluster g": "CLUSTER_G", "cluster h": "CLUSTER_H",
+        "cluster i": "CLUSTER_I", "cluster j": "CLUSTER_J",
+    }
 
-    landuse = _parse_keywords_from_table(md, "Land Use and Zoning Service Names")
-    parcel = _parse_keywords_from_table(md, "Parcel and Property Services")
-    if landuse or parcel:
-        TIER1_LANDUSE_TOKENS = landuse + parcel
+    current_cluster = None
+    current_excl_section = None
+    excl_svc: list[str] = []
+    excl_lyr: list[str] = []
 
-    dev = _parse_keywords_from_table(md, "Development Activity Services")
-    historic = _parse_keywords_from_table(md, "Historic Preservation Services")
-    if dev or historic:
-        TIER1_DEVELOPMENT_TOKENS = dev + historic
+    for line in md.splitlines():
+        stripped = line.strip()
 
-    SERVICE_KEYWORDS = TIER1_DEPARTMENT_TOKENS + TIER1_LANDUSE_TOKENS + TIER1_DEVELOPMENT_TOKENS
+        # Detect cluster headings like "### Cluster A: Zoning..."
+        if stripped.startswith("### Cluster"):
+            for key, attr in cluster_map.items():
+                if key in stripped.lower():
+                    current_cluster = attr
+                    current_excl_section = None
+                    break
+            continue
 
-    # --- Tier 2: Layer name clusters ---
-    for label, attr in [
-        ("Cluster A", "CLUSTER_A"), ("Cluster B", "CLUSTER_B"),
-        ("Cluster C", "CLUSTER_C"), ("Cluster D", "CLUSTER_D"),
-        ("Cluster E", "CLUSTER_E"), ("Cluster F", "CLUSTER_F"),
-        ("Cluster G", "CLUSTER_G"), ("Cluster H", "CLUSTER_H"),
-        ("Cluster I", "CLUSTER_I"), ("Cluster J", "CLUSTER_J"),
-    ]:
-        parsed = _parse_cluster_keywords(md, label)
-        if parsed:
-            globals()[attr] = parsed
+        # Detect exclusion subsection headings
+        if stripped.startswith("### ") and current_cluster is None:
+            lower = stripped.lower()
+            if any(x in lower for x in ["public works", "fire / emergency",
+                    "business license", "parks and recreation", "utilities",
+                    "police", "schools"]):
+                current_excl_section = stripped
+                continue
+
+        # Detect end of section (new ## heading)
+        if stripped.startswith("## "):
+            current_cluster = None
+            current_excl_section = None
+            continue
+
+        # Parse Keywords: lines for clusters — merge with hardcoded defaults
+        # so the doc adds keywords but manually-added ones aren't lost
+        if current_cluster and stripped.lower().startswith("keywords:"):
+            kws = _parse_backtick_keywords(stripped)
+            if kws:
+                existing = set(globals().get(current_cluster, []))
+                merged = list(existing | set(kws))
+                globals()[current_cluster] = merged
+            current_cluster = None
+            continue
+
+        # Parse exclusion sections
+        if current_excl_section:
+            lower = stripped.lower()
+            if lower.startswith("service name tokens:"):
+                for kw in _parse_backtick_keywords(stripped):
+                    excl_svc.append(kw)
+            elif lower.startswith("layer name keywords:"):
+                for kw in _parse_backtick_keywords(stripped):
+                    excl_lyr.append(kw)
+
+    # Update module globals
+    if excl_svc:
+        EXCLUDE_SERVICE_TOKENS = excl_svc
+    if excl_lyr:
+        EXCLUDE_LAYER_KEYWORDS = excl_lyr
 
     LAYER_KEYWORDS = (
         CLUSTER_A + CLUSTER_B + CLUSTER_C + CLUSTER_D +
@@ -583,43 +597,9 @@ def reload_keywords_from_skill_doc():
         CLUSTER_I + CLUSTER_J
     )
 
-    # --- Exclusion signals ---
-    # Parse exclusion section tables/keywords
-    excl_svc: list[str] = []
-    excl_lyr: list[str] = []
-    in_exclusion = False
-    current_subsection = ""
-    for line in md.splitlines():
-        stripped = line.strip()
-        if "## 4. Exclusion Signals" in stripped:
-            in_exclusion = True
-            continue
-        if in_exclusion and stripped.startswith("## ") and "Exclusion" not in stripped:
-            break
-        if not in_exclusion:
-            continue
-        if stripped.startswith("###"):
-            current_subsection = stripped
-            continue
-        # Parse "Service name tokens:" lines
-        if "service name tokens:" in stripped.lower():
-            tokens_part = stripped.split(":", 1)[1] if ":" in stripped else ""
-            for t in tokens_part.split(","):
-                t = t.strip().strip("`").strip()
-                if t:
-                    excl_svc.append(t.lower())
-        # Parse "Layer name keywords:" lines
-        if "layer name keywords:" in stripped.lower():
-            kw_part = stripped.split(":", 1)[1] if ":" in stripped else ""
-            for kw in kw_part.split(","):
-                kw = kw.strip().strip("`").strip()
-                if kw and len(kw) > 1:
-                    excl_lyr.append(kw.lower())
 
-    if excl_svc:
-        EXCLUDE_SERVICE_TOKENS = excl_svc
-    if excl_lyr:
-        EXCLUDE_LAYER_KEYWORDS = excl_lyr
+# Load from doc at module import time
+_load_keywords_from_doc()
 
 
 # ---------------------------------------------------------------------------
@@ -880,24 +860,163 @@ def guess_arcgis_urls(start_url: str) -> set[str]:
     domain_parts = parsed.netloc.replace("www.", "").split(".")
     city_slug = domain_parts[0] if domain_parts else ""
 
+    # Strip "www." from netloc for subdomain probing
+    base_domain = parsed.netloc.replace("www.", "")
+
     candidates = [
-        f"https://gis.{parsed.netloc}/arcgis/rest/services",
-        f"https://maps.{parsed.netloc}/arcgis/rest/services",
+        f"https://gis.{base_domain}/arcgis/rest/services",
+        f"https://maps.{base_domain}/arcgis/rest/services",
+        f"https://mapping.{base_domain}/arcgis/rest/services",
+        f"https://gisweb.{base_domain}/arcgis/rest/services",
+        f"https://services.{base_domain}/arcgis/rest/services",
+        f"https://arcgis.{base_domain}/arcgis/rest/services",
+        f"https://webgis.{base_domain}/arcgis/rest/services",
+        f"https://egis.{base_domain}/arcgis/rest/services",
         f"https://{parsed.netloc}/arcgis/rest/services",
     ]
-    # Try ArcGIS Online services patterns (services1-9)
-    for i in range(1, 6):
-        candidates.append(
-            f"https://services{i}.arcgis.com/{city_slug}/ArcGIS/rest/services"
-        )
+    # Note: ArcGIS Online (services1-9.arcgis.com) org IDs are random
+    # alphanumeric strings, not derivable from the jurisdiction name.
+    # AGOL discovery requires the LLM search (Tier 2).
 
     found: set[str] = set()
     for url in candidates:
         resp = fetch(url, timeout=10)
-        if resp and resp.status_code == 200 and "services" in resp.text.lower():
+        if resp is None or resp.status_code != 200:
+            continue
+        # Validate that the endpoint actually contains services or folders —
+        # some ArcGIS servers return 200 with an empty services page
+        try:
+            data = resp.json()
+            has_content = data.get("services") or data.get("folders")
+        except (json.JSONDecodeError, ValueError):
+            # Not JSON — check for HTML services directory page
+            has_content = "rest/services" in resp.text.lower() and (
+                "MapServer" in resp.text or "FeatureServer" in resp.text
+            )
+        if has_content:
             progress.log(f"  Guessed valid endpoint: {url}")
             found.add(url)
     return found
+
+
+# ---------------------------------------------------------------------------
+# Tier 1.5 — ArcGIS Online (AGOL) content search
+# ---------------------------------------------------------------------------
+# Esri's public content search API lets us find a jurisdiction's GIS data
+# by searching for common layer names (zoning, parcels, land use) combined
+# with the jurisdiction name. This is free, deterministic, and more reliable
+# than LLM web search for AGOL-hosted jurisdictions.
+
+_AGOL_SEARCH_URL = "https://www.arcgis.com/sharing/rest/search"
+
+# Common planning layer names to search for — these are near-universal
+_AGOL_SEARCH_TERMS = ["zoning", "parcels", "land use"]
+
+
+def _search_agol_for_jurisdiction(jurisdiction_name: str) -> set[str]:
+    """Search ArcGIS Online for a jurisdiction's REST Services Directory.
+
+    Searches AGOL's public content API for Feature Services matching
+    the jurisdiction name + common planning keywords. Ranks results by
+    how closely the owner name matches the jurisdiction, then extracts
+    the REST directory root from the best match.
+    """
+    from urllib.parse import quote
+
+    # Build search terms from jurisdiction name
+    # Strip "City of", "County of" etc. for cleaner owner matching
+    name_words = [w for w in jurisdiction_name.lower().split()
+                  if w not in ("city", "of", "county", "town", "village", "the")]
+    name_key = "".join(name_words)  # e.g., "milpitas", "lasvegas"
+
+    owner_urls: dict[str, list[str]] = {}
+
+    for term in _AGOL_SEARCH_TERMS:
+        query = f'{jurisdiction_name} {term} type:"Feature Service"'
+        try:
+            resp = session.get(
+                _AGOL_SEARCH_URL,
+                params={"q": query, "f": "json", "num": 10},
+                timeout=10,
+            )
+            if resp.status_code != 200:
+                continue
+            data = resp.json()
+        except (requests.RequestException, json.JSONDecodeError, ValueError):
+            continue
+
+        for item in data.get("results", []):
+            owner = item.get("owner", "")
+            url = item.get("url", "")
+            if not owner or not url:
+                continue
+            if owner not in owner_urls:
+                owner_urls[owner] = []
+            owner_urls[owner].append(url)
+
+    if not owner_urls:
+        progress.log("  AGOL search returned no results")
+        return set()
+
+    # Build abbreviation variants for matching
+    # "Grand Prairie" → "gp", "grandprairie"
+    # "Las Vegas" → "lv", "lasvegas"
+    initials = "".join(w[0] for w in name_words if w)  # "gp", "lv"
+
+    # Rank owners by how well they match the jurisdiction
+    best_owner = None
+    best_score = -1
+
+    for owner, urls in owner_urls.items():
+        score = len(urls)  # frequency of results
+        owner_clean = owner.lower().replace("_", "").replace("-", "").replace(".", "")
+        # Also clean the email portion if present
+        owner_name = owner_clean.split("@")[0] if "@" in owner_clean else owner_clean
+
+        # Strong signal: full jurisdiction name appears in owner name
+        if name_key in owner_name:
+            score += 100
+        # Partial match on individual words (4+ chars to avoid false positives)
+        elif any(w in owner_name for w in name_words if len(w) > 3):
+            score += 50
+        # Abbreviation match: "gpgis" contains "gp" for "Grand Prairie"
+        # Require initials to be at least 2 chars and owner to contain "gis"
+        elif len(initials) >= 2 and initials in owner_name and "gis" in owner_name:
+            score += 60
+        # GIS-related owner names are more likely to be official
+        if "gis" in owner_name:
+            score += 10
+        # Email domain matching: gpgis@cityofgp.com → "cityofgp" contains "gp"
+        if "@" in owner_clean:
+            email_domain = owner_clean.split("@")[1].split(".")[0]
+            if name_key in email_domain or (len(initials) >= 2 and
+                    ("cityof" + initials) == email_domain):
+                score += 80
+
+        if score > best_score:
+            best_score = score
+            best_owner = owner
+
+    if best_score < 50:
+        # No confident match — jurisdiction name not found in any owner
+        progress.log(f"  AGOL search found results but no confident jurisdiction match "
+                     f"(best owner: {best_owner}, score: {best_score})")
+        return set()
+
+    urls = owner_urls[best_owner]
+    progress.log(f"  Found AGOL owner: {best_owner} ({len(urls)} layers)")
+
+    # Extract REST directory roots from the URLs
+    roots: set[str] = set()
+    for url in urls:
+        root = _normalize_rest_directory(url)
+        if root:
+            roots.add(root)
+
+    for root in roots:
+        progress.log(f"  ✓ {root}")
+
+    return roots
 
 
 # ---------------------------------------------------------------------------
@@ -1101,10 +1220,29 @@ def llm_search_for_arcgis(jurisdiction_name: str, homepage_url: str = "") -> set
     # Only alphanumeric, spaces, hyphens, periods, apostrophes are allowed.
     jurisdiction_name = sanitize_jurisdiction_name(jurisdiction_name)
 
-    # --- Check: no API key ---
+    # --- Tier 1: Fast-path probe (FREE, no API cost) ---
+    # Tests common subdomain patterns (gis., maps., etc.) directly.
+    # If any return a valid ArcGIS services page, we skip everything else.
+    if homepage_url:
+        progress.log("Tier 1 — Fast-path: probing common ArcGIS subdomains…")
+        fast_results = guess_arcgis_urls(homepage_url)
+        if fast_results:
+            progress.log(f"Tier 1 — Fast-path found {len(fast_results)} endpoint(s)")
+            return expand_single_service_urls(fast_results)
+
+    # --- Tier 1.5: ArcGIS Online search (FREE, no API cost) ---
+    # Search Esri's public AGOL content API for the jurisdiction's org.
+    # This is the most reliable method for AGOL-hosted jurisdictions.
+    progress.log("Tier 1.5 — Searching ArcGIS Online for jurisdiction data…")
+    agol_results = _search_agol_for_jurisdiction(jurisdiction_name)
+    if agol_results:
+        progress.log(f"Tier 1.5 — AGOL search found {len(agol_results)} endpoint(s)")
+        return expand_single_service_urls(agol_results)
+
+    # --- Tier 2: LLM Web Search (requires API key) ---
     if not _ANTHROPIC_API_KEY:
-        progress.log("ERROR: No ANTHROPIC_API_KEY set. Cannot perform LLM web search.")
-        progress.log("Please set the ANTHROPIC_API_KEY environment variable, or use "
+        progress.log("Tier 2 — No ANTHROPIC_API_KEY set. Cannot perform LLM web search.")
+        progress.log("Set the ANTHROPIC_API_KEY environment variable, or use "
                       "Direct mode (Path A) with a known ArcGIS REST Services Directory URL.")
         return set()
 
@@ -1113,16 +1251,6 @@ def llm_search_for_arcgis(jurisdiction_name: str, homepage_url: str = "") -> set
     except ImportError:
         progress.log("ERROR: anthropic package not installed. Run: pip install anthropic")
         return set()
-
-    # --- Tier 1: Fast-path probe (FREE, no API cost) ---
-    # Tests common subdomain patterns (gis., maps., etc.) directly.
-    # If any return a valid ArcGIS services page, we skip the LLM entirely.
-    if homepage_url:
-        progress.log("Tier 1 — Fast-path: probing common ArcGIS subdomains…")
-        fast_results = guess_arcgis_urls(homepage_url)
-        if fast_results:
-            progress.log(f"Tier 1 — Fast-path found {len(fast_results)} endpoint(s) — skipping LLM search")
-            return expand_single_service_urls(fast_results)
 
     # --- Tier 2: LLM Web Search (requires API key) ---
     # Rebuild system prompt fresh so it picks up any planning doc changes
@@ -1149,13 +1277,24 @@ def llm_search_for_arcgis(jurisdiction_name: str, homepage_url: str = "") -> set
     user_prompt = (
         f"Find the ArcGIS REST Services Directory for: {jurisdiction_name}\n"
         f"{domain_hint}\n\n"
-        f"IMPORTANT: Use the jurisdiction name '{jurisdiction_name}' and "
+        f"IMPORTANT: The results MUST be for {jurisdiction_name} specifically — "
+        f"not a neighboring city, county, or regional agency. Verify that any "
+        f"ArcGIS endpoint you find is operated by or contains data for "
+        f"{jurisdiction_name} before reporting it.\n\n"
+        f"Use the jurisdiction name '{jurisdiction_name}' and "
         f"{'domain ' + repr(domain_name) if domain_name else 'common government domain patterns'} "
         f"as your primary search parameters.\n\n"
-        f"First, search for their ArcGIS REST Services Directory URL (contains "
-        f"'/arcgis/rest/services' or similar pattern).\n\n"
-        f"If you cannot find the directory root, also search for individual "
-        f"feature layers. Try queries like:\n"
+        f"Search strategy:\n"
+        f"1. Search for the ArcGIS REST Services Directory URL (contains "
+        f"'/arcgis/rest/services' or similar pattern).\n"
+        f"2. Many jurisdictions host GIS data on ArcGIS Online (AGOL) at URLs like "
+        f"https://services[N].arcgis.com/[orgId]/ArcGIS/rest/services — search for "
+        f"'{jurisdiction_name} arcgis online' or '{jurisdiction_name} GIS hub' "
+        f"to find their AGOL organization.\n"
+        f"3. Search for their GIS hub page (e.g., {jurisdiction_name.replace(' ', '-').lower()}"
+        f"-gis.hub.arcgis.com or similar).\n"
+        f"4. If you cannot find the directory root, search for individual "
+        f"feature layers:\n"
         f'  - "{jurisdiction_name} zoning FeatureServer"\n'
         f'  - "{jurisdiction_name} parcels arcgis"\n'
         f'  - "{jurisdiction_name} land use MapServer"\n'
@@ -1223,11 +1362,87 @@ def llm_search_for_arcgis(jurisdiction_name: str, homepage_url: str = "") -> set
         progress.log(f"Tier 2 — LLM search found {len(found_urls)} ArcGIS REST endpoint(s)")
         for url in found_urls:
             progress.log(f"  ✓ {url}")
+
+        # Validate that the discovered endpoints belong to the target jurisdiction
+        # by checking if any service names reference the jurisdiction
+        validated_urls = _validate_jurisdiction_match(
+            found_urls, jurisdiction_name, homepage_url
+        )
+        if validated_urls:
+            found_urls = validated_urls
+        else:
+            progress.log("  ⚠ Could not confirm jurisdiction match — using all discovered URLs")
     else:
         progress.log("Tier 2 — LLM search did not find any ArcGIS REST endpoints.")
         progress.log("Try Direct mode (Path A) if you can locate the ArcGIS REST Services Directory URL manually.")
 
     return expand_single_service_urls(found_urls)
+
+
+def _validate_jurisdiction_match(
+    urls: set[str], jurisdiction_name: str, homepage_url: str
+) -> set[str] | None:
+    """Check if discovered ArcGIS endpoints belong to the target jurisdiction.
+
+    Fetches the services list from each URL and looks for the jurisdiction name
+    (or domain slug) in service names, descriptions, or the endpoint URL itself.
+    Returns the subset of URLs that match, or None if validation is inconclusive.
+    """
+    if not jurisdiction_name:
+        return None
+
+    # Build search terms from jurisdiction name and domain
+    search_terms = []
+    # Split jurisdiction name into significant words (skip "City", "of", "County")
+    for word in jurisdiction_name.lower().split():
+        if word not in ("city", "of", "county", "town", "village", "the"):
+            search_terms.append(word)
+
+    if homepage_url:
+        parsed = urlparse(homepage_url)
+        domain = parsed.netloc.replace("www.", "")
+        # Add the main domain slug (e.g., "milpitas" from "milpitas.gov")
+        slug = domain.split(".")[0]
+        if slug and len(slug) > 2:
+            search_terms.append(slug.lower())
+
+    if not search_terms:
+        return None
+
+    matched: set[str] = set()
+    for url in urls:
+        root = _normalize_rest_directory(url)
+
+        # Check if jurisdiction name appears in the URL itself
+        url_lower = url.lower()
+        if any(term in url_lower for term in search_terms):
+            matched.add(url)
+            continue
+
+        # Fetch services list and check names/descriptions
+        resp = fetch(f"{root}?f=json", timeout=10)
+        if resp is None:
+            continue
+        try:
+            data = resp.json()
+        except (json.JSONDecodeError, ValueError):
+            continue
+
+        # Check service names and folder names
+        text_to_check = " ".join(
+            svc.get("name", "") for svc in data.get("services", [])
+        ).lower()
+        text_to_check += " " + " ".join(data.get("folders", [])).lower()
+        # Also check the serviceDescription if available
+        text_to_check += " " + data.get("serviceDescription", "").lower()
+
+        if any(term in text_to_check for term in search_terms):
+            matched.add(url)
+            progress.log(f"  ✓ Confirmed jurisdiction match: {root}")
+        else:
+            progress.log(f"  ✗ No jurisdiction match in services at: {root}")
+
+    return matched if matched else None
 
 
 def _parse_llm_search_response(response, found_urls: set[str]):
@@ -1336,22 +1551,8 @@ def query_rest_services(rest_url: str) -> list[dict]:
             layer_id = lyr.get("id", 0)
             layer_url = f"{svc_url}/{layer_id}"
 
-            # Fetch layer details for record count and geometry
-            lyr_detail = fetch(f"{layer_url}?f=json")
-            record_count = None
-            geom_type = ""
-            if lyr_detail:
-                try:
-                    ld = lyr_detail.json()
-                    geom_type = ld.get("geometryType", "")
-                    # Try to get record count via query
-                    count_resp = fetch(f"{layer_url}/query?where=1%3D1&returnCountOnly=true&f=json")
-                    if count_resp:
-                        count_data = count_resp.json()
-                        record_count = count_data.get("count")
-                except (json.JSONDecodeError, ValueError):
-                    pass
-
+            # Only store name/URL here — detail fetches are deferred
+            # to after filtering to avoid thousands of unnecessary requests
             layers.append({
                 "service_name": svc_name,
                 "service_url": svc_url,
@@ -1359,8 +1560,8 @@ def query_rest_services(rest_url: str) -> list[dict]:
                 "layer_name": layer_name,
                 "layer_id": layer_id,
                 "layer_url": layer_url,
-                "record_count": record_count,
-                "geometry_type": geom_type,
+                "record_count": None,
+                "geometry_type": "",
             })
 
     progress.stat("Total feature layers enumerated", len(layers))
@@ -1376,6 +1577,65 @@ def is_excluded_by_pattern(layer_name: str) -> bool:
     for pat in EXCLUDE_PATTERNS:
         if pat.search(layer_name):
             return True
+    return False
+
+
+# Section 4.10 — Hard Exclusion Patterns (override all rules)
+HARD_EXCLUSION_PATTERNS = [
+    # Annotation and label classes — use word boundaries to avoid
+    # matching "annexation", "annual", etc.
+    re.compile(r"\bannotation", re.IGNORECASE),
+    re.compile(r"_anno\b", re.IGNORECASE),
+    re.compile(r"^anno_", re.IGNORECASE),
+    re.compile(r"\blabels\b", re.IGNORECASE),
+    # Platform-internal geometry objects (EnerGov and similar)
+    re.compile(r"^History\s*Point", re.IGNORECASE),
+    re.compile(r"^HistoryPolygon", re.IGNORECASE),
+    re.compile(r"^Spatial\s*Polyline", re.IGNORECASE),
+    re.compile(r"^SpatialCollectionPolyline", re.IGNORECASE),
+    re.compile(r"^Location$", re.IGNORECASE),
+    re.compile(r"^Converted_Graphics", re.IGNORECASE),
+    re.compile(r"^Feature\.MAPREAD\.", re.IGNORECASE),
+    re.compile(r"^CityWide\.SDE\.", re.IGNORECASE),
+    # Generic/ambiguous — A_ prefix is an annotation class naming convention
+    re.compile(r"^Default$", re.IGNORECASE),
+    re.compile(r"^A_\d+", re.IGNORECASE),
+    # Imagery and graphics — word boundaries to avoid false positives
+    re.compile(r"\bimagery\b", re.IGNORECASE),
+    re.compile(r"\baerial\b", re.IGNORECASE),
+    re.compile(r"^Converted_Graphics", re.IGNORECASE),
+    # Transit operational layers
+    re.compile(r"^Bus_Routes_and_Stops", re.IGNORECASE),
+    re.compile(r"^BusStops_", re.IGNORECASE),
+    # Street sweeping and signs maintenance
+    re.compile(r"Street_Sweeping", re.IGNORECASE),
+    re.compile(r"Maintenance Subzones For Signs", re.IGNORECASE),
+    # Administrative FEMA / census reference (not substantive planning)
+    re.compile(r"Map Index", re.IGNORECASE),
+    re.compile(r"Panel Index", re.IGNORECASE),
+    # Lead/water quality data
+    re.compile(r"^LeadWater_", re.IGNORECASE),
+    re.compile(r"^Lead_Copper", re.IGNORECASE),
+]
+
+
+def is_hard_excluded(layer_name: str) -> bool:
+    """Section 4.10 — Hard exclusion patterns override ALL rules."""
+    for pat in HARD_EXCLUSION_PATTERNS:
+        if pat.search(layer_name):
+            return True
+    return False
+
+
+def is_service_excluded(service_name: str) -> bool:
+    """Check if the service path matches a non-planning service."""
+    sn = service_name.lower()
+    for token in EXCLUDE_SERVICE_TOKENS:
+        if token in sn:
+            return True
+    # InternalUse services should never be traversed for public planning layers
+    if "internaluse" in sn.replace("_", "").replace(" ", ""):
+        return True
     return False
 
 
@@ -1512,6 +1772,16 @@ def filter_layers(layers: list[dict]) -> list[dict]:
     ambiguous_count = 0
 
     for lyr in layers:
+        # Hard exclusion patterns (Section 4.10) — override all rules
+        if is_hard_excluded(lyr["layer_name"]):
+            excluded_count += 1
+            continue
+
+        # Service-path exclusion (InternalUse, Fire_, PW_, etc.)
+        if is_service_excluded(lyr["service_name"]):
+            excluded_count += 1
+            continue
+
         # Raster/imagery exclusion
         if is_excluded_by_pattern(lyr["layer_name"]):
             excluded_count += 1
@@ -1534,6 +1804,36 @@ def filter_layers(layers: list[dict]) -> list[dict]:
                 scored_layers.append(lyr)
         else:
             excluded_count += 1
+
+    # Single-service MapServer rule (planning doc Principle 3):
+    # When a generic-named service contains planning layers (score >= 2),
+    # promote Cluster G/J layers (score 1) in that same service to score 2.
+    # This handles small counties that publish everything in one MapServer.
+    services_with_planning = set()
+    for lyr in scored_layers:
+        if lyr.get("confidence_score", 0) >= 2:
+            services_with_planning.add(lyr["service_name"])
+
+    already_included = set(id(lyr) for lyr in scored_layers)
+    if services_with_planning and ambiguous_count > 0:
+        promoted = 0
+        for lyr in layers:
+            if id(lyr) in already_included:
+                continue
+            # Only consider layers that were scored in the first pass
+            # (i.e., passed exclusion checks) but scored too low
+            if "confidence_score" not in lyr:
+                continue
+            if lyr["confidence_score"] != 1:
+                continue  # only promote score-1 (Cluster G/J) layers
+            if lyr["service_name"] not in services_with_planning:
+                continue
+            lyr["confidence_score"] = 2
+            lyr["priority"] = 2
+            scored_layers.append(lyr)
+            promoted += 1
+        if promoted:
+            progress.log(f"  Promoted {promoted} administrative layers via single-service rule")
 
     # Sort by priority then score descending
     scored_layers.sort(key=lambda x: (x.get("priority", 99),
@@ -1560,16 +1860,22 @@ def normalise_name(name: str) -> str:
     return re.sub(r"\s+", " ", n).strip()
 
 
-def names_are_similar(a: str, b: str, threshold: float = 0.65) -> bool:
+def names_are_similar(a: str, b: str, threshold: float = 0.95) -> bool:
     na, nb = normalise_name(a), normalise_name(b)
     if na == nb:
         return True
-    # Check token overlap
-    ta, tb = set(na.split()), set(nb.split())
-    if ta and tb:
-        overlap = len(ta & tb) / min(len(ta), len(tb))
-        if overlap >= 0.6:
-            return True
+    # Strip trailing year-like suffixes so "Parcels2021" matches "Parcels2022"
+    na_base = re.sub(r"\d{4}$", "", na).strip()
+    nb_base = re.sub(r"\d{4}$", "", nb).strip()
+    if na_base and nb_base and na_base == nb_base:
+        return True
+    # Handle singular/plural: if difference is only a trailing "s"
+    if na.rstrip("s") == nb.rstrip("s") and abs(len(na) - len(nb)) <= 1:
+        return True
+    # Require very high sequence similarity — this prevents collapsing
+    # distinct layers like "ZONING" vs "COUNTY ZONING", "PARCELS" vs
+    # "VOLUNTARY AGRICULTURAL PARCELS", or "MOUNT AIRY HISTORIC DISTRICT"
+    # vs "MOUNT AIRY LOCAL HISTORIC DISTRICT".
     return SequenceMatcher(None, na, nb).ratio() >= threshold
 
 
@@ -1602,6 +1908,30 @@ def deduplicate(layers: list[dict]) -> list[dict]:
     progress.stat("Layers after deduplication", len(deduped))
     progress.stat("Duplicates removed", removed)
     return deduped
+
+
+# ---------------------------------------------------------------------------
+# Step 4b – Enrich filtered layers with detail (deferred from enumeration)
+# ---------------------------------------------------------------------------
+
+def enrich_layer_details(layers: list[dict]):
+    """Fetch record count and geometry type for each layer.
+    Called after filtering so we only make detail requests for layers
+    that passed scoring, not all 1000+ enumerated layers."""
+    progress.log(f"Fetching details for {len(layers)} filtered layers…")
+    for lyr in layers:
+        layer_url = lyr["layer_url"]
+        lyr_detail = fetch(f"{layer_url}?f=json")
+        if lyr_detail:
+            try:
+                ld = lyr_detail.json()
+                lyr["geometry_type"] = ld.get("geometryType", "")
+                count_resp = fetch(f"{layer_url}/query?where=1%3D1&returnCountOnly=true&f=json")
+                if count_resp:
+                    count_data = count_resp.json()
+                    lyr["record_count"] = count_data.get("count")
+            except (json.JSONDecodeError, ValueError):
+                pass
 
 
 # ---------------------------------------------------------------------------
@@ -1703,25 +2033,29 @@ def scan(website_url: str, output_dir: str = ".", progress_callback=None,
     """
     progress.reset(callback=progress_callback)
 
-    # Re-read the planning layer pattern skill document from the repo
-    # so any updates to the keywords are picked up without restarting
-    reload_keywords_from_skill_doc()
-
     print("\n" + "=" * 60)
     print("  Government ArcGIS Feature Layer Scanner")
     print("=" * 60 + "\n")
 
-    # Step 0 – Validate URL
-    progress.log(f"Validating URL: {website_url}")
-    validation = validate_url(website_url, mode=mode)
-    if validation["valid"]:
-        progress.log(f"✓ URL is valid and reachable — {validation['message']}")
+    # Step 0 – Validate URL (skip if user provided only a jurisdiction name)
+    has_url = website_url and website_url.startswith(("http://", "https://"))
+    if has_url:
+        progress.log(f"Validating URL: {website_url}")
+        validation = validate_url(website_url, mode=mode)
+        if validation["valid"]:
+            progress.log(f"✓ URL is valid and reachable — {validation['message']}")
+        else:
+            progress.log(f"✗ URL validation failed — {validation['message']}")
+            if progress_callback:
+                progress_callback("error_msg", f"URL validation failed: {validation['message']}")
+            progress.summary()
+            return {"error": f"URL validation failed: {validation['message']}",
+                    "stats": dict(progress.stats)}
+    elif jurisdiction_name:
+        progress.log(f"Searching for: {jurisdiction_name}")
     else:
-        progress.log(f"✗ URL validation failed — {validation['message']}")
-        if progress_callback:
-            progress_callback("error_msg", f"URL validation failed: {validation['message']}")
         progress.summary()
-        return {"error": f"URL validation failed: {validation['message']}",
+        return {"error": "No URL or jurisdiction name provided.",
                 "stats": dict(progress.stats)}
 
     # Step 1 – find ArcGIS REST endpoints (skipped for "direct" mode)
@@ -1741,10 +2075,39 @@ def scan(website_url: str, output_dir: str = ".", progress_callback=None,
             parsed_url = urlparse(website_url)
             domain = parsed_url.netloc.replace("www.", "")
             # e.g., "cityoflasvegas.com" → "cityoflasvegas" → "city of las vegas"
-            jurisdiction_slug = domain.split(".")[0]
-            # Insert spaces before capital letters and replace common separators
+            #        "milpitas.gov" → "milpitas" → "City of Milpitas"
+            #        "co.surry.nc.us" → "co surry nc" → "Surry County"
+            # Strip TLD and common suffixes to get the jurisdiction slug
+            # e.g., "milpitas.gov" → "milpitas", "co.surry.nc.us" → "co.surry.nc"
+            #        "cityoflasvegas.com" → "cityoflasvegas"
+            for suffix in [".gov", ".us", ".org", ".com", ".net"]:
+                if domain.endswith(suffix):
+                    domain = domain[: -len(suffix)]
+                    break
+            # Remove state codes (2-letter segments) from multi-part domains
+            # e.g., "sunnyvale.ca" → "sunnyvale", "co.surry.nc" → "co.surry"
+            _US_STATES = {
+                "al", "ak", "az", "ar", "ca", "co", "ct", "de", "fl", "ga",
+                "hi", "id", "il", "in", "ia", "ks", "ky", "la", "me", "md",
+                "ma", "mi", "mn", "ms", "mo", "mt", "ne", "nv", "nh", "nj",
+                "nm", "ny", "nc", "nd", "oh", "ok", "or", "pa", "ri", "sc",
+                "sd", "tn", "tx", "ut", "vt", "va", "wa", "wv", "wi", "wy",
+            }
+            # Keep "co" (county prefix) but remove state codes
+            parts = [p for p in domain.split(".")
+                     if p.lower() not in _US_STATES or p.lower() == "co"]
+            jurisdiction_slug = " ".join(parts)
+            jurisdiction_slug = jurisdiction_slug.replace("-", " ").replace("_", " ")
+            # Insert spaces before capital letters (e.g., "cityoflasvegas" → "cityof las vegas")
             jurisdiction_name = re.sub(r"([a-z])([A-Z])", r"\1 \2", jurisdiction_slug)
-            jurisdiction_name = jurisdiction_name.replace("-", " ").replace("_", " ")
+            # Expand common prefixes
+            jurisdiction_name = re.sub(r"\bco\b", "County of", jurisdiction_name, flags=re.IGNORECASE)
+            jurisdiction_name = re.sub(r"\bcityof\b", "City of", jurisdiction_name, flags=re.IGNORECASE)
+            # If it's a single word (like "milpitas"), prepend "City of"
+            words = jurisdiction_name.strip().split()
+            if len(words) == 1 and not any(w in jurisdiction_name.lower() for w in ["county", "city", "town"]):
+                jurisdiction_name = f"City of {jurisdiction_name}"
+            jurisdiction_name = jurisdiction_name.strip().title()
 
         # SECURITY: Sanitise jurisdiction name before passing to LLM
         jurisdiction_name = sanitize_jurisdiction_name(jurisdiction_name)
@@ -1752,7 +2115,7 @@ def scan(website_url: str, output_dir: str = ".", progress_callback=None,
         progress.log(f"Discovery mode: finding ArcGIS endpoints for {jurisdiction_name}")
         rest_urls = llm_search_for_arcgis(
             jurisdiction_name=jurisdiction_name,
-            homepage_url=website_url,
+            homepage_url=website_url if has_url else "",
         )
 
     if not rest_urls:
@@ -1775,19 +2138,27 @@ def scan(website_url: str, output_dir: str = ".", progress_callback=None,
     if not filtered:
         progress.log("WARNING: No layers matched planning/development keywords. "
                       "Outputting all non-excluded layers instead.")
-        filtered = [l for l in all_layers if not is_excluded(l["layer_name"])]
+        filtered = [l for l in all_layers if not is_excluded_by_pattern(l["layer_name"])
+                    and not is_hard_excluded(l["layer_name"])
+                    and not is_service_excluded(l["service_name"])]
         for l in filtered:
             l["priority"] = 99
 
     # Step 4 – deduplicate
     final_layers = deduplicate(filtered)
 
+    # Step 4b – fetch layer details (record count, geometry) only for final set
+    enrich_layer_details(final_layers)
+
     # Step 5 – output
     os.makedirs(output_dir, exist_ok=True)
 
-    domain = urlparse(website_url).netloc.replace("www.", "").split(".")[0]
-    md_path = os.path.join(output_dir, f"{domain}_feature_layers.md")
-    xl_path = os.path.join(output_dir, f"{domain}_feature_layers.xlsx")
+    if has_url:
+        file_slug = urlparse(website_url).netloc.replace("www.", "").split(".")[0]
+    else:
+        file_slug = re.sub(r"[^a-z0-9]+", "_", jurisdiction_name.lower()).strip("_")
+    md_path = os.path.join(output_dir, f"{file_slug}_feature_layers.md")
+    xl_path = os.path.join(output_dir, f"{file_slug}_feature_layers.xlsx")
 
     write_markdown(final_layers, md_path)
     write_excel(final_layers, xl_path)
@@ -1817,17 +2188,41 @@ def main():
         description="Scan a local government website for ArcGIS planning/development feature layers."
     )
     parser.add_argument(
-        "url",
-        help="Root URL of the local government website (e.g. https://www.dublinohiousa.gov)",
+        "input",
+        help="ArcGIS REST URL, jurisdiction website URL, or jurisdiction name "
+             "(e.g. 'https://gis.example.gov/arcgis/rest/services' or 'City of Sunnyvale')",
     )
     parser.add_argument(
         "-o", "--output-dir",
         default=".",
         help="Directory for output files (default: current directory)",
     )
+    parser.add_argument(
+        "-m", "--mode",
+        choices=["direct", "homepage"],
+        default=None,
+        help="Scan mode: 'direct' for ArcGIS REST URL, 'homepage' for discovery. "
+             "Auto-detected from input if not specified.",
+    )
     args = parser.parse_args()
 
-    result = scan(args.url, args.output_dir)
+    user_input = args.input
+    is_url = user_input.startswith(("http://", "https://"))
+
+    # Auto-detect mode
+    mode = args.mode
+    if mode is None:
+        if is_url and "/rest/services" in user_input.lower():
+            mode = "direct"
+        else:
+            mode = "homepage"
+
+    # Determine URL vs jurisdiction name
+    url = user_input if is_url else ""
+    jurisdiction_name = "" if is_url else user_input
+
+    result = scan(url, args.output_dir, mode=mode,
+                  jurisdiction_name=jurisdiction_name)
     if result.get("error"):
         sys.exit(1)
 
