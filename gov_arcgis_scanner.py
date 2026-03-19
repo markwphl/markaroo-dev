@@ -1589,10 +1589,12 @@ HARD_EXCLUSION_PATTERNS = [
     re.compile(r"^anno_", re.IGNORECASE),
     re.compile(r"\blabels\b", re.IGNORECASE),
     # Platform-internal geometry objects (EnerGov and similar)
-    re.compile(r"^History\s*Point", re.IGNORECASE),
-    re.compile(r"^HistoryPolygon", re.IGNORECASE),
-    re.compile(r"^Spatial\s*Polyline", re.IGNORECASE),
-    re.compile(r"^SpatialCollectionPolyline", re.IGNORECASE),
+    # Covers: History, HistoryPoint, HistoryPolygon, HistoryPolyLine, etc.
+    re.compile(r"^History$", re.IGNORECASE),
+    re.compile(r"^History\s*(?:Point|Poly|Line|Polygon|PolyLine)", re.IGNORECASE),
+    # Covers: Spatial Polyline, Spatial Collection, SpatialCollection*
+    re.compile(r"^Spatial\s*(?:Polyline|Collection)", re.IGNORECASE),
+    re.compile(r"^SpatialCollection", re.IGNORECASE),
     re.compile(r"^Location$", re.IGNORECASE),
     re.compile(r"^Converted_Graphics", re.IGNORECASE),
     re.compile(r"^Feature\.MAPREAD\.", re.IGNORECASE),
@@ -2032,6 +2034,10 @@ def scan(website_url: str, output_dir: str = ".", progress_callback=None,
         dict with keys: xl_path, md_path, stats, error (if any).
     """
     progress.reset(callback=progress_callback)
+
+    # Re-read the planning layer pattern skill document so any keyword
+    # updates committed since the server started are picked up immediately.
+    _load_keywords_from_doc()
 
     print("\n" + "=" * 60)
     print("  Government ArcGIS Feature Layer Scanner")
