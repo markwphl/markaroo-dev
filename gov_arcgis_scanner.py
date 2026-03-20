@@ -8,20 +8,30 @@ deduplicates, and exports results to Excel and Markdown.
 
 Designed to run from a private corporate intranet in production.
 
-## Architecture — Two-Tier ArcGIS Endpoint Discovery
-------------------------------------------------------
-When running in "discovery" mode (Path B), the scanner uses a two-tier
+## Architecture — Multi-Tier ArcGIS Endpoint Discovery
+-------------------------------------------------------
+When running in "discovery" mode (Path B), the scanner uses a multi-tier
 strategy to locate the jurisdiction's ArcGIS REST Services Directory URL:
 
   Tier 1 — Fast-Path Probe (FREE, no API cost)
       Tests common subdomain/path patterns (gis.<domain>, maps.<domain>,
-      etc.) with lightweight HTTP HEAD/GET requests. If any return a valid
-      ArcGIS services page, discovery is complete.
+      etc.) with lightweight HTTP GET requests.
+
+  Tier 1b — Alternate Domain Probe (FREE, no API cost)
+      Generates candidate alternate domains from jurisdiction name
+      abbreviations/initials (e.g. "Contra Costa County" → cccounty.us)
+      and probes each with standard GIS subdomain prefixes.  Catches the
+      widespread pattern where GIS lives on a different domain.
+
+  Tier 1.5 — ArcGIS Online Content Search (FREE, no API cost)
+      Searches Esri's public AGOL content API for the jurisdiction's org.
+
+  Tier 1.75 — ArcGIS Hub / Open Data Search (FREE, no API cost)
+      Searches Esri's Hub datasets API for planning-related data published
+      by the jurisdiction.  Hub indexes both AGOL and self-hosted servers.
 
   Tier 2 — LLM Web Search (requires ANTHROPIC_API_KEY)
-      If Tier 1 fails, calls the Claude API with the ``web_search`` server
-      tool.  Claude searches the public web using the jurisdiction name and
-      URL patterns from ``docs/planning-layer-pattern-skill-v2.md`` to find
+      Calls the Claude API with the ``web_search`` server tool to find
       either the REST Services Directory URL or individual feature layer
       URLs (from which the directory root is derived).
 
@@ -183,6 +193,17 @@ USER_AGENT = (
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 )
 HEADERS = {"User-Agent": USER_AGENT}
+
+# US state abbreviations — used for alternate domain generation and
+# jurisdiction name parsing.  "co" is excluded because it doubles as
+# the county prefix ("co.surry.nc.us").
+_US_STATES = frozenset({
+    "al", "ak", "az", "ar", "ca", "ct", "de", "fl", "ga",
+    "hi", "id", "il", "in", "ia", "ks", "ky", "la", "me", "md",
+    "ma", "mi", "mn", "ms", "mo", "mt", "ne", "nv", "nh", "nj",
+    "nm", "ny", "nc", "nd", "oh", "ok", "or", "pa", "ri", "sc",
+    "sd", "tn", "tx", "ut", "vt", "va", "wa", "wv", "wi", "wy",
+})
 
 # ArcGIS REST Services Directory URL patterns — regexes used to recognise
 # valid ArcGIS REST endpoint URLs in crawled HTML and LLM responses.
@@ -903,6 +924,263 @@ def guess_arcgis_urls(start_url: str) -> set[str]:
 
 
 # ---------------------------------------------------------------------------
+# Tier 1b — Alternate Domain Probing
+# ---------------------------------------------------------------------------
+# Many government jurisdictions host GIS on a domain that doesn't match their
+# main website.  Examples:
+#   Contra Costa County: contracosta.ca.gov → GIS at gis.cccounty.us
+#   Orange County:       ocgov.com          → GIS at maps.ocgov.net
+#   Riverside County:    rivco.org          → GIS at gis.countyofriverside.us
+#
+# This tier generates candidate alternate domains from abbreviation patterns
+# and probes each with the standard ArcGIS subdomain prefixes.
+
+# Common GIS subdomain prefixes to probe for each alternate domain
+_GIS_SUBDOMAIN_PREFIXES = ("gis", "maps", "mapping", "gisweb", "services",
+                           "arcgis", "webgis", "egis", "ccmap", "gispublic",
+                           "ags")
+
+
+def _extract_state_from_url(homepage_url: str) -> str:
+    """Extract a US state abbreviation from a URL domain.
+
+    Looks for 2-letter state codes in the domain parts:
+      contracosta.ca.gov → "ca"
+      co.surry.nc.us     → "nc"
+
+    Returns empty string if no state found.
+    """
+    if not homepage_url:
+        return ""
+    parsed = urlparse(homepage_url)
+    domain = parsed.netloc.replace("www.", "").lower()
+    for part in domain.split("."):
+        if len(part) == 2 and part in _US_STATES:
+            return part
+    return ""
+
+
+def _generate_alternate_domains(jurisdiction_name: str,
+                                homepage_url: str = "") -> list[str]:
+    """Generate plausible alternate domain names for a jurisdiction.
+
+    Many governments use abbreviated or legacy domains for their GIS
+    infrastructure that differ from their main website.  This function
+    produces a ranked list of candidate base domains to probe.
+
+    SECURITY: All generated domains are synthetic candidates built from
+    the sanitised jurisdiction name — they contain no user-controlled
+    path components and will be validated by ``is_safe_url()`` before
+    any HTTP request is made.
+    """
+    # Extract key name words, stripping entity-type prefixes.
+    # Defence-in-depth: strip any chars that aren't alpha (the caller
+    # should already sanitise via sanitize_jurisdiction_name(), but we
+    # ensure generated domains never contain special characters).
+    _STRIP_WORDS = {"city", "of", "county", "town", "village", "the",
+                    "borough", "township", "parish"}
+    words = [re.sub(r"[^a-z]", "", w.lower()) for w in jurisdiction_name.split()
+             if w.lower() not in _STRIP_WORDS]
+    words = [w for w in words if w]  # drop empty strings
+    if not words:
+        return []
+
+    initials = "".join(w[0] for w in words)      # "cc" for Contra Costa
+    concat = "".join(words)                       # "contracosta"
+
+    # Detect entity type from the original name
+    name_lower = jurisdiction_name.lower()
+    is_county = "county" in name_lower
+    is_city = any(w in name_lower for w in ("city", "town", "village", "borough"))
+
+    # Build base-name variants (without TLD)
+    bases: list[str] = []
+    if is_county:
+        if len(initials) >= 2:
+            bases.append(f"{initials}county")          # cccounty
+        bases.append(f"{concat}county")                # contracostacounty
+        bases.append(f"countyof{concat}")              # countyofcontracosta
+        bases.append(concat)                           # contracosta
+    elif is_city:
+        bases.append(f"cityof{concat}")                # cityoflasvegas
+        bases.append(concat)                           # lasvegas
+        if len(initials) >= 2:
+            bases.append(initials)                     # lv
+    else:
+        bases.append(concat)
+        if len(initials) >= 2:
+            bases.append(initials)
+
+    # TLDs to try (ordered by likelihood for government GIS)
+    tlds = [".us", ".gov", ".org", ".net", ".com"]
+
+    # Extract state abbreviation for legacy domain patterns
+    state_abbr = _extract_state_from_url(homepage_url)
+
+    # Assemble candidate domains
+    domains: list[str] = []
+
+    # Standard: {base}.{tld}
+    for base in bases:
+        for tld in tlds:
+            domains.append(f"{base}{tld}")
+
+    # Legacy pattern: co.{name}.{state}.us (very common for counties)
+    if state_abbr and is_county:
+        domains.append(f"co.{concat}.{state_abbr}.us")
+        if len(words) > 1:
+            domains.append(f"co.{words[0]}.{state_abbr}.us")
+
+    # Deduplicate, preserving order; exclude the homepage domain itself
+    homepage_domain = ""
+    if homepage_url:
+        homepage_domain = urlparse(homepage_url).netloc.replace("www.", "").lower()
+
+    seen: set[str] = set()
+    unique: list[str] = []
+    for d in domains:
+        dl = d.lower()
+        if dl not in seen and dl != homepage_domain:
+            seen.add(dl)
+            unique.append(d)
+
+    return unique
+
+
+_MAX_PROBE_SECONDS = 60  # Total time budget for alternate domain probing
+
+
+def _probe_alternate_domains(jurisdiction_name: str,
+                             homepage_url: str = "") -> set[str]:
+    """Tier 1b — Probe alternate domain candidates for ArcGIS endpoints.
+
+    Generates plausible alternate domains from the jurisdiction name's
+    abbreviations/initials and probes each with common ArcGIS subdomain
+    prefixes (gis., maps., etc.).
+
+    This catches the widespread pattern where a government's GIS server
+    lives on a completely different domain from their main website.
+
+    Enforces a total time budget of ``_MAX_PROBE_SECONDS`` to prevent
+    excessive HTTP request duration when many candidates time out.
+    """
+    alt_domains = _generate_alternate_domains(jurisdiction_name, homepage_url)
+    if not alt_domains:
+        return set()
+
+    progress.log(f"  Probing {len(alt_domains)} alternate domain candidates…")
+
+    found: set[str] = set()
+    start_time = time.monotonic()
+    for domain in alt_domains:
+        # Enforce total time budget
+        if time.monotonic() - start_time > _MAX_PROBE_SECONDS:
+            progress.log("  Alternate domain probing time budget exceeded, stopping")
+            break
+        # Build candidate URLs with each subdomain prefix
+        candidates = [
+            f"https://{prefix}.{domain}/arcgis/rest/services"
+            for prefix in _GIS_SUBDOMAIN_PREFIXES
+        ]
+        # Also try the bare domain
+        candidates.append(f"https://{domain}/arcgis/rest/services")
+
+        for url in candidates:
+            # SECURITY: Validate before fetching (SSRF protection)
+            if not is_safe_url(url):
+                continue
+            resp = fetch(url, timeout=8)
+            if resp is None or resp.status_code != 200:
+                continue
+            try:
+                data = resp.json()
+                has_content = data.get("services") or data.get("folders")
+            except (json.JSONDecodeError, ValueError):
+                has_content = ("rest/services" in resp.text.lower() and
+                               ("MapServer" in resp.text or
+                                "FeatureServer" in resp.text))
+            if has_content:
+                progress.log(f"  ✓ Found endpoint on alternate domain: {url}")
+                found.add(url)
+                # Found a working domain — probe remaining prefixes on it
+                # but skip to next domain after that
+                break
+
+    return found
+
+
+# ---------------------------------------------------------------------------
+# Tier 1.75 — ArcGIS Hub / Open Data Organization Search
+# ---------------------------------------------------------------------------
+# ArcGIS Hub is Esri's open data platform.  Many jurisdictions publish their
+# GIS data through Hub, which indexes both AGOL-hosted and self-hosted
+# ArcGIS Server layers.  Searching Hub datasets lets us discover endpoints
+# that the AGOL content search (Tier 1.5) misses — particularly for
+# jurisdictions with self-hosted servers on non-obvious domains.
+
+_HUB_SEARCH_URL = "https://hub.arcgis.com/api/v3/datasets"
+
+
+def _search_hub_for_jurisdiction(jurisdiction_name: str) -> set[str]:
+    """Search ArcGIS Hub Open Data for a jurisdiction's GIS endpoints.
+
+    Queries the Hub datasets API for planning-related datasets matching
+    the jurisdiction name, then extracts REST directory roots from the
+    access URLs of matching datasets.
+    """
+    # Strip entity type words for a cleaner query
+    _STRIP_WORDS = {"city", "of", "county", "town", "village", "the",
+                    "borough", "township", "parish"}
+    words = [w.lower() for w in jurisdiction_name.split()
+             if w.lower() not in _STRIP_WORDS]
+    name_key = " ".join(words)
+
+    search_terms = ["zoning", "parcels", "land use"]
+    found_urls: set[str] = set()
+
+    for term in search_terms:
+        query = f"{jurisdiction_name} {term}"
+        try:
+            resp = session.get(
+                _HUB_SEARCH_URL,
+                params={"q": query, "per_page": 10},
+                timeout=10,
+            )
+            if resp.status_code != 200:
+                continue
+            data = resp.json()
+        except (requests.RequestException, json.JSONDecodeError, ValueError):
+            continue
+
+        for item in data.get("data", []):
+            attrs = item.get("attributes", {})
+            # Check if this result is relevant to our jurisdiction
+            source_name = (attrs.get("source", "") or "").lower()
+            org_name = (attrs.get("organization", "") or "").lower()
+            item_name = (attrs.get("name", "") or "").lower()
+
+            # Require at least one of source/org/name to mention the jurisdiction
+            relevance_text = f"{source_name} {org_name} {item_name}"
+            if not any(w in relevance_text for w in words
+                       if len(w) > 2):
+                continue
+
+            # Extract the service URL from the item
+            url = attrs.get("url", "")
+            if url and "/rest/services" in url.lower():
+                root = _normalize_rest_directory(url)
+                if root and is_safe_url(root):
+                    found_urls.add(root)
+
+    if found_urls:
+        progress.log(f"  Hub search found {len(found_urls)} endpoint(s)")
+        for url in found_urls:
+            progress.log(f"  ✓ {url}")
+
+    return found_urls
+
+
+# ---------------------------------------------------------------------------
 # Tier 1.5 — ArcGIS Online (AGOL) content search
 # ---------------------------------------------------------------------------
 # Esri's public content search API lets us find a jurisdiction's GIS data
@@ -1194,7 +1472,7 @@ _LLM_SEARCH_SYSTEM_PROMPT = _build_llm_search_system_prompt()
 
 def llm_search_for_arcgis(jurisdiction_name: str, homepage_url: str = "") -> set[str]:
     """
-    Two-Tier ArcGIS endpoint discovery.
+    Multi-tier ArcGIS endpoint discovery.
 
     This is the main entry point for finding ArcGIS REST Services Directory
     URLs when the user provides a jurisdiction name/homepage (Path B).
@@ -1203,13 +1481,14 @@ def llm_search_for_arcgis(jurisdiction_name: str, homepage_url: str = "") -> set
     feature layer URLs (FeatureServer/MapServer).  When a feature layer URL
     is found, the REST directory root is derived by truncating at '/services/'.
 
-    Execution order:
-      1. FAST-PATH PROBE (Tier 1) — tests common subdomain patterns like
-         gis.<domain>, maps.<domain> with HTTP requests.  Free, no API cost.
-         If found, returns immediately.
-      2. LLM WEB SEARCH (Tier 2) — calls Claude API with the web_search
-         server tool.  Requires ANTHROPIC_API_KEY env var and the
-         ``anthropic`` Python package.
+    Execution order (each tier is skipped if a prior tier succeeds):
+      Tier 1    — Fast-path probe: common subdomains of the homepage domain.
+      Tier 1b   — Alternate domain probe: abbreviation/initials-based domains.
+      Tier 1.5  — ArcGIS Online (AGOL) content search.
+      Tier 1.75 — ArcGIS Hub / Open Data organization search.
+      Tier 2    — LLM web search (requires ANTHROPIC_API_KEY).
+
+    Tiers 1–1.75 are free (no API cost).  Tier 2 uses the Claude API.
 
     Args:
         jurisdiction_name: Human-readable name (e.g. "City of Las Vegas").
@@ -1233,6 +1512,18 @@ def llm_search_for_arcgis(jurisdiction_name: str, homepage_url: str = "") -> set
             progress.log(f"Tier 1 — Fast-path found {len(fast_results)} endpoint(s)")
             return expand_single_service_urls(fast_results)
 
+    # --- Tier 1b: Alternate domain probe (FREE, no API cost) ---
+    # Generates candidate domains from the jurisdiction name's abbreviation
+    # patterns (e.g. "Contra Costa County" → cccounty.us, contracostacounty.gov)
+    # and probes each with standard ArcGIS subdomain prefixes.  Catches the
+    # widespread pattern where GIS lives on a non-obvious alternate domain.
+    if jurisdiction_name:
+        progress.log("Tier 1b — Probing alternate domain patterns…")
+        alt_results = _probe_alternate_domains(jurisdiction_name, homepage_url)
+        if alt_results:
+            progress.log(f"Tier 1b — Alternate domain probe found {len(alt_results)} endpoint(s)")
+            return expand_single_service_urls(alt_results)
+
     # --- Tier 1.5: ArcGIS Online search (FREE, no API cost) ---
     # Search Esri's public AGOL content API for the jurisdiction's org.
     # This is the most reliable method for AGOL-hosted jurisdictions.
@@ -1241,6 +1532,15 @@ def llm_search_for_arcgis(jurisdiction_name: str, homepage_url: str = "") -> set
     if agol_results:
         progress.log(f"Tier 1.5 — AGOL search found {len(agol_results)} endpoint(s)")
         return expand_single_service_urls(agol_results)
+
+    # --- Tier 1.75: ArcGIS Hub / Open Data search (FREE, no API cost) ---
+    # Search Esri's Hub datasets API for planning-related data published
+    # by this jurisdiction.  Hub indexes both AGOL and self-hosted servers.
+    progress.log("Tier 1.75 — Searching ArcGIS Hub / Open Data…")
+    hub_results = _search_hub_for_jurisdiction(jurisdiction_name)
+    if hub_results:
+        progress.log(f"Tier 1.75 — Hub search found {len(hub_results)} endpoint(s)")
+        return expand_single_service_urls(hub_results)
 
     # --- Tier 2: LLM Web Search (requires API key) ---
     if not _ANTHROPIC_API_KEY:
@@ -2104,16 +2404,9 @@ def scan(website_url: str, output_dir: str = ".", progress_callback=None,
                     break
             # Remove state codes (2-letter segments) from multi-part domains
             # e.g., "sunnyvale.ca" → "sunnyvale", "co.surry.nc" → "co.surry"
-            _US_STATES = {
-                "al", "ak", "az", "ar", "ca", "co", "ct", "de", "fl", "ga",
-                "hi", "id", "il", "in", "ia", "ks", "ky", "la", "me", "md",
-                "ma", "mi", "mn", "ms", "mo", "mt", "ne", "nv", "nh", "nj",
-                "nm", "ny", "nc", "nd", "oh", "ok", "or", "pa", "ri", "sc",
-                "sd", "tn", "tx", "ut", "vt", "va", "wa", "wv", "wi", "wy",
-            }
             # Keep "co" (county prefix) but remove state codes
             parts = [p for p in domain.split(".")
-                     if p.lower() not in _US_STATES or p.lower() == "co"]
+                     if p.lower() not in (_US_STATES | {"co"}) or p.lower() == "co"]
             jurisdiction_slug = " ".join(parts)
             jurisdiction_slug = jurisdiction_slug.replace("-", " ").replace("_", " ")
             # Insert spaces before capital letters (e.g., "cityoflasvegas" → "cityof las vegas")

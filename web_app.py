@@ -1234,7 +1234,11 @@ def api_progress(job_id):
                 # Keep-alive
                 yield ": keepalive\n\n"
                 continue
-            yield f"event: {event_type}\ndata: {message}\n\n"
+            # SECURITY: Escape newlines in SSE data to prevent event injection.
+            # SSE uses newlines as message delimiters; unescaped newlines in
+            # the data field could inject additional events.
+            safe_message = message.replace("\n", "\\n").replace("\r", "")
+            yield f"event: {event_type}\ndata: {safe_message}\n\n"
             if event_type == "done":
                 break
 
