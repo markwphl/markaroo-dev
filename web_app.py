@@ -68,7 +68,7 @@ INDEX_HTML = r"""
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>GIS Data Finder</title>
+<title>GIS Layers List Compiler</title>
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
 
@@ -584,7 +584,7 @@ INDEX_HTML = r"""
 <!-- ====== Sidebar ====== -->
 <aside class="sidebar">
   <div class="sidebar-brand">
-    <h2>GIS Data Finder</h2>
+    <h2>GIS Layers List Compiler</h2>
     <p>Search for a client's GIS Layers and endpoints</p>
   </div>
 
@@ -601,7 +601,7 @@ INDEX_HTML = r"""
 
 <!-- ====== Main content ====== -->
 <main class="main">
-  <h1 class="hero-title">How can I help you prepare a GIS Layer List for the Planning Data Table?</h1>
+  <h1 class="hero-title">Search for a client's GIS Layers and endpoints</h1>
 
   <!-- Input -->
   <div class="input-card">
