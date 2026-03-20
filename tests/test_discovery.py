@@ -388,6 +388,266 @@ class TestAlternateDomainSecurity:
 # Existing function: _normalize_rest_directory
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# State extraction from jurisdiction name
+# ---------------------------------------------------------------------------
+
+class TestExtractStateFromName:
+    """Tests for _extract_state_from_name()."""
+
+    def test_comma_abbreviation(self):
+        """'Lake County, CA' → 'ca'"""
+        assert scanner._extract_state_from_name("Lake County, CA") == "ca"
+
+    def test_comma_full_name(self):
+        """'Franklin County, Ohio' → 'oh'"""
+        assert scanner._extract_state_from_name("Franklin County, Ohio") == "oh"
+
+    def test_space_abbreviation(self):
+        """'Lake County OH' → 'oh'"""
+        assert scanner._extract_state_from_name("Lake County OH") == "oh"
+
+    def test_full_state_suffix(self):
+        """'City of Austin, Texas' → 'tx'"""
+        assert scanner._extract_state_from_name("City of Austin, Texas") == "tx"
+
+    def test_florida(self):
+        assert scanner._extract_state_from_name("Miami-Dade County, FL") == "fl"
+
+    def test_no_state(self):
+        assert scanner._extract_state_from_name("Lake County") == ""
+
+    def test_empty(self):
+        assert scanner._extract_state_from_name("") == ""
+
+
+# ---------------------------------------------------------------------------
+# State-specific domain generation (CA, OH, FL, TX)
+# ---------------------------------------------------------------------------
+
+class TestCaliforniaPatterns:
+    """Tests for CA-specific alternate domain generation."""
+
+    def test_ca_county_from_url(self):
+        """CA counties should get CA-specific patterns via URL."""
+        domains = scanner._generate_alternate_domains(
+            "Lake County",
+            "https://www.lakecountyca.gov",
+        )
+        # Should include CA-specific patterns
+        assert "lake.ca.gov" in domains
+        assert "lakecounty.org" in domains
+
+    def test_ca_county_from_name(self):
+        """CA counties should get CA-specific patterns via name suffix."""
+        domains = scanner._generate_alternate_domains(
+            "Lake County, CA", ""
+        )
+        assert "lake.ca.gov" in domains
+        assert "lakecounty.org" in domains
+        # Should also get general state-qualified patterns
+        assert "lakeca.gov" in domains
+
+    def test_ca_city_ci_pattern(self):
+        """CA cities should get ci.{name}.ca.us pattern."""
+        domains = scanner._generate_alternate_domains(
+            "City of Milpitas, CA", ""
+        )
+        assert "ci.milpitas.ca.us" in domains
+        assert "milpitas.ca.us" in domains
+
+    def test_ca_county_initials_gov_org(self):
+        """CA counties should get {initials}gov.org pattern (e.g. sjgov.org)."""
+        domains = scanner._generate_alternate_domains(
+            "San Joaquin County, CA", ""
+        )
+        assert "sjgov.org" in domains
+
+    def test_ca_contra_costa(self):
+        """Contra Costa County, CA should produce cccounty and CA patterns."""
+        domains = scanner._generate_alternate_domains(
+            "Contra Costa County",
+            "https://www.contracosta.ca.gov",
+        )
+        assert any("cccounty" in d for d in domains)
+        assert "contra.ca.gov" in domains
+        assert "ccgov.org" in domains
+
+
+class TestOhioPatterns:
+    """Tests for OH-specific alternate domain generation."""
+
+    def test_oh_county_from_name(self):
+        """OH counties should get OH-specific patterns via name."""
+        domains = scanner._generate_alternate_domains(
+            "Franklin County, OH", ""
+        )
+        assert "franklincountyoh.org" in domains
+        assert "franklinohio.gov" in domains
+        assert "franklinoh.us" in domains
+        assert "franklincountyohio.gov" in domains
+
+    def test_oh_county_auditor_pattern(self):
+        """OH counties should get auditor/engineer domain patterns."""
+        domains = scanner._generate_alternate_domains(
+            "Franklin County, Ohio", ""
+        )
+        assert "franklincountyauditor.org" in domains
+        assert "franklincountyengineer.org" in domains
+
+    def test_oh_county_legacy(self):
+        """OH counties should get co.{name}.oh.us legacy pattern."""
+        domains = scanner._generate_alternate_domains(
+            "Franklin County",
+            "https://franklincountyoh.gov",
+        )
+        # Should detect 'oh' from URL suffix
+        assert "co.franklin.oh.us" in domains
+
+    def test_oh_city(self):
+        """OH cities should get OH-specific patterns."""
+        domains = scanner._generate_alternate_domains(
+            "City of Columbus, OH", ""
+        )
+        assert "columbusohio.gov" in domains
+        assert "ci.columbus.oh.us" in domains
+        assert "columbus.oh.us" in domains
+
+
+class TestFloridaPatterns:
+    """Tests for FL-specific alternate domain generation."""
+
+    def test_fl_county_from_name(self):
+        """FL counties should get FL-specific patterns via name."""
+        domains = scanner._generate_alternate_domains(
+            "Hillsborough County, FL", ""
+        )
+        assert "hillsboroughcountyfl.gov" in domains
+        assert "hillsboroughfl.gov" in domains
+        assert "hillsboroughcounty.org" in domains
+        assert "hillsboroughfl.us" in domains
+
+    def test_fl_county_appraiser(self):
+        """FL counties should get property appraiser patterns."""
+        domains = scanner._generate_alternate_domains(
+            "Hillsborough County, Florida", ""
+        )
+        assert "hillsboroughpa.com" in domains
+        assert "hillsboroughappraiser.com" in domains
+
+    def test_fl_city(self):
+        """FL cities should get FL-specific patterns."""
+        domains = scanner._generate_alternate_domains(
+            "City of Tampa, FL", ""
+        )
+        assert "tampafl.gov" in domains
+        assert "tampafl.us" in domains
+        assert "ci.tampa.fl.us" in domains
+
+
+class TestTexasPatterns:
+    """Tests for TX-specific alternate domain generation."""
+
+    def test_tx_county_from_name(self):
+        """TX counties should get TX-specific patterns via name."""
+        domains = scanner._generate_alternate_domains(
+            "Harris County, TX", ""
+        )
+        assert "harriscountytx.org" in domains
+        assert "harriscounty.org" in domains
+        assert "harristx.us" in domains
+        assert "harriscountytx.gov" in domains
+
+    def test_tx_county_cad_pattern(self):
+        """TX counties should get appraisal district (CAD) patterns."""
+        domains = scanner._generate_alternate_domains(
+            "Harris County, Texas", ""
+        )
+        assert "harriscad.org" in domains
+        assert "harrisad.org" in domains
+
+    def test_tx_city(self):
+        """TX cities should get TX-specific patterns."""
+        domains = scanner._generate_alternate_domains(
+            "City of Austin, TX", ""
+        )
+        assert "austintx.gov" in domains
+        assert "austintexas.gov" in domains
+        assert "austintx.us" in domains
+        assert "ci.austin.tx.us" in domains
+
+
+class TestStateExtractionFallback:
+    """Tests that state abbreviation is extracted from name when URL lacks it."""
+
+    def test_state_from_name_when_url_has_no_state(self):
+        """State should be extracted from name when URL domain lacks state code."""
+        domains = scanner._generate_alternate_domains(
+            "Franklin County, OH",
+            "https://www.franklincountyohio.gov",  # no 2-letter state in domain
+        )
+        # Should still get OH patterns because state is in the name
+        assert "franklincountyoh.org" in domains
+
+    def test_state_from_url_preferred_over_name(self):
+        """URL-based state detection should take precedence."""
+        domains = scanner._generate_alternate_domains(
+            "Lake County",  # no state in name
+            "https://www.lakecountyca.gov",  # 'ca' in domain
+        )
+        # Should detect CA from URL and generate CA patterns
+        assert "lake.ca.gov" in domains
+
+
+class TestDomainGenerationSecurity:
+    """Security tests for the enhanced domain generation."""
+
+    def test_no_special_chars_in_generated_domains(self):
+        """All generated domains should be clean — no injection vectors."""
+        for name, url in [
+            ("Franklin County, OH", "https://example.oh.us"),
+            ("City of Austin, TX", "https://austintx.gov"),
+            ("Hillsborough County, FL", ""),
+            ("San Joaquin County, CA", ""),
+        ]:
+            domains = scanner._generate_alternate_domains(name, url)
+            for d in domains:
+                assert " " not in d, f"Domain has space: {d}"
+                assert "?" not in d, f"Domain has query: {d}"
+                assert "#" not in d, f"Domain has fragment: {d}"
+                assert "@" not in d, f"Domain has userinfo: {d}"
+                # Domains may contain dots and hyphens but not other specials
+                assert all(c.isalnum() or c in ".-" for c in d), \
+                    f"Domain has invalid char: {d}"
+
+    def test_domain_count_bounded(self):
+        """Even with state-specific patterns, domain count stays reasonable.
+        Too many domains = too many HTTP probes = DoS risk."""
+        for name in [
+            "Franklin County, OH",
+            "Contra Costa County, CA",
+            "Hillsborough County, FL",
+            "Harris County, TX",
+        ]:
+            domains = scanner._generate_alternate_domains(name, "")
+            # Should not exceed ~80 domains (16 prefixes × 5 TLDs = 80 combos
+            # per domain + state-specific — but many are deduplicated)
+            assert len(domains) <= 80, \
+                f"Too many domains for {name}: {len(domains)}"
+
+    def test_no_duplicates_with_state_patterns(self):
+        """Deduplication should still work with state-specific patterns."""
+        for name in [
+            "Franklin County, OH",
+            "Lake County, CA",
+            "City of Tampa, FL",
+            "City of Austin, TX",
+        ]:
+            domains = scanner._generate_alternate_domains(name, "")
+            assert len(domains) == len(set(d.lower() for d in domains)), \
+                f"Duplicate domains for {name}"
+
+
 class TestNormalizeRestDirectory:
     """Regression tests for REST directory normalization."""
 

@@ -1022,7 +1022,8 @@ def guess_arcgis_urls(start_url: str) -> set[str]:
 # Common GIS subdomain prefixes to probe for each alternate domain
 _GIS_SUBDOMAIN_PREFIXES = ("gis", "maps", "mapping", "gisweb", "services",
                            "arcgis", "webgis", "egis", "ccmap", "gispublic",
-                           "ags")
+                           "ags", "gisservices", "gis2", "gisweb2",
+                           "gisdata", "mapservices", "gisportal")
 
 
 def _extract_state_from_url(homepage_url: str) -> str:
@@ -1032,15 +1033,92 @@ def _extract_state_from_url(homepage_url: str) -> str:
       contracosta.ca.gov → "ca"
       co.surry.nc.us     → "nc"
 
+    Also checks for state codes as a trailing suffix on the primary domain
+    label, which is common for government sites:
+      lakecountyca.gov   → "ca"
+      franklincountyoh.gov → "oh"
+
     Returns empty string if no state found.
     """
     if not homepage_url:
         return ""
     parsed = urlparse(homepage_url)
     domain = parsed.netloc.replace("www.", "").lower()
-    for part in domain.split("."):
+    parts = domain.split(".")
+
+    # First pass: look for standalone 2-letter state codes in domain parts
+    for part in parts:
         if len(part) == 2 and part in _US_STATES:
             return part
+
+    # Second pass: check if the primary domain label ends with a state code
+    # e.g., "lakecountyca" in "lakecountyca.gov" → "ca"
+    if parts:
+        primary = parts[0]
+        if len(primary) > 2:
+            suffix = primary[-2:]
+            if suffix in _US_STATES:
+                return suffix
+
+    return ""
+
+
+# Full US state name → abbreviation mapping for extracting state from
+# jurisdiction names like "Franklin County, Ohio" or "Lake County, CA".
+_STATE_NAME_TO_ABBR = {
+    "alabama": "al", "alaska": "ak", "arizona": "az", "arkansas": "ar",
+    "california": "ca", "colorado": "co", "connecticut": "ct",
+    "delaware": "de", "florida": "fl", "georgia": "ga", "hawaii": "hi",
+    "idaho": "id", "illinois": "il", "indiana": "in", "iowa": "ia",
+    "kansas": "ks", "kentucky": "ky", "louisiana": "la", "maine": "me",
+    "maryland": "md", "massachusetts": "ma", "michigan": "mi",
+    "minnesota": "mn", "mississippi": "ms", "missouri": "mo",
+    "montana": "mt", "nebraska": "ne", "nevada": "nv",
+    "new hampshire": "nh", "new jersey": "nj", "new mexico": "nm",
+    "new york": "ny", "north carolina": "nc", "north dakota": "nd",
+    "ohio": "oh", "oklahoma": "ok", "oregon": "or", "pennsylvania": "pa",
+    "rhode island": "ri", "south carolina": "sc", "south dakota": "sd",
+    "tennessee": "tn", "texas": "tx", "utah": "ut", "vermont": "vt",
+    "virginia": "va", "washington": "wa", "west virginia": "wv",
+    "wisconsin": "wi", "wyoming": "wy",
+}
+
+
+def _extract_state_from_name(jurisdiction_name: str) -> str:
+    """Extract a US state abbreviation from a jurisdiction name.
+
+    Handles multiple formats:
+      "Lake County, CA"         → "ca"
+      "Franklin County, Ohio"   → "oh"
+      "City of Austin, TX"      → "tx"
+      "Lake County"             → ""  (no state info)
+
+    Returns empty string if no state found.
+    """
+    if not jurisdiction_name:
+        return ""
+    name_lower = jurisdiction_name.lower().strip()
+
+    # Check for comma-separated state suffix: "County Name, XX" or "County Name, State"
+    if "," in name_lower:
+        suffix = name_lower.split(",")[-1].strip()
+        # Check 2-letter abbreviation
+        if len(suffix) == 2 and suffix in _US_STATES:
+            return suffix
+        # Check full state name
+        if suffix in _STATE_NAME_TO_ABBR:
+            return _STATE_NAME_TO_ABBR[suffix]
+
+    # Check if the last word is a state abbreviation (e.g. "Lake County OH")
+    last_word = name_lower.split()[-1] if name_lower.split() else ""
+    if len(last_word) == 2 and last_word in _US_STATES:
+        return last_word
+
+    # Check if the last word(s) are a full state name
+    for state_name, abbr in _STATE_NAME_TO_ABBR.items():
+        if name_lower.endswith(state_name):
+            return abbr
+
     return ""
 
 
@@ -1052,30 +1130,52 @@ def _generate_alternate_domains(jurisdiction_name: str,
     infrastructure that differ from their main website.  This function
     produces a ranked list of candidate base domains to probe.
 
+    Includes state-specific patterns for the most common domain-mismatch
+    states: CA, OH, FL, TX — where county/city GIS services frequently
+    live on domains completely unrelated to the main government website.
+
     SECURITY: All generated domains are synthetic candidates built from
     the sanitised jurisdiction name — they contain no user-controlled
     path components and will be validated by ``is_safe_url()`` before
     any HTTP request is made.
     """
-    # Extract key name words, stripping entity-type prefixes.
+    # Extract key name words, stripping entity-type prefixes and state
+    # suffixes.  Handles both "Lake County" and "Lake County, CA" formats.
     # Defence-in-depth: strip any chars that aren't alpha (the caller
     # should already sanitise via sanitize_jurisdiction_name(), but we
     # ensure generated domains never contain special characters).
+
+    # First, strip any comma-separated state suffix ("Lake County, CA" → "Lake County")
+    name_for_words = jurisdiction_name.split(",")[0].strip()
+
     _STRIP_WORDS = {"city", "of", "county", "town", "village", "the",
                     "borough", "township", "parish"}
-    words = [re.sub(r"[^a-z]", "", w.lower()) for w in jurisdiction_name.split()
+    words = [re.sub(r"[^a-z]", "", w.lower()) for w in name_for_words.split()
              if w.lower() not in _STRIP_WORDS]
+    # Also strip trailing state abbreviations (e.g. "Lake County OH" → ["lake"])
+    if words and len(words[-1]) == 2 and words[-1] in _US_STATES:
+        words = words[:-1]
+    # Also strip full state names that may appear as last word(s)
+    for state_name in _STATE_NAME_TO_ABBR:
+        state_words = state_name.split()
+        if (len(words) > len(state_words) and
+                [w.lower() for w in words[-len(state_words):]] == state_words):
+            words = words[:-len(state_words)]
+            break
     words = [w for w in words if w]  # drop empty strings
     if not words:
         return []
 
     initials = "".join(w[0] for w in words)      # "cc" for Contra Costa
     concat = "".join(words)                       # "contracosta"
+    first_word = words[0]                         # "contra"
 
-    # Detect entity type from the original name
+    # Detect entity type from the original name (using word boundaries to
+    # avoid false positives like "hillsborough" matching "borough")
     name_lower = jurisdiction_name.lower()
-    is_county = "county" in name_lower
-    is_city = any(w in name_lower for w in ("city", "town", "village", "borough"))
+    name_words_lower = set(re.sub(r"[^a-z\s]", "", name_lower).split())
+    is_county = "county" in name_words_lower
+    is_city = bool(name_words_lower & {"city", "town", "village", "borough"})
 
     # Build base-name variants (without TLD)
     bases: list[str] = []
@@ -1098,8 +1198,12 @@ def _generate_alternate_domains(jurisdiction_name: str,
     # TLDs to try (ordered by likelihood for government GIS)
     tlds = [".us", ".gov", ".org", ".net", ".com"]
 
-    # Extract state abbreviation for legacy domain patterns
+    # Extract state abbreviation — try URL first, then jurisdiction name.
+    # This lets users supply "Lake County, CA" and get CA-specific patterns
+    # even without a homepage URL.
     state_abbr = _extract_state_from_url(homepage_url)
+    if not state_abbr:
+        state_abbr = _extract_state_from_name(jurisdiction_name)
 
     # Assemble candidate domains
     domains: list[str] = []
@@ -1114,6 +1218,99 @@ def _generate_alternate_domains(jurisdiction_name: str,
         domains.append(f"co.{concat}.{state_abbr}.us")
         if len(words) > 1:
             domains.append(f"co.{words[0]}.{state_abbr}.us")
+
+    # -------------------------------------------------------------------
+    # State-specific domain patterns
+    # -------------------------------------------------------------------
+    # These address the widespread domain-mismatch problem where GIS
+    # services live on domains that share no naming relationship with the
+    # jurisdiction's main website.  The patterns below are derived from
+    # empirical analysis of real government GIS deployments.
+
+    if state_abbr:
+        # --- Patterns common to all states with a known abbreviation ---
+        # {name}{state}.gov  — e.g. "milpitasca.gov", "franklincountyoh.gov"
+        domains.append(f"{concat}{state_abbr}.gov")
+        if is_county:
+            domains.append(f"{concat}county{state_abbr}.gov")
+            # {name}county.{state}.gov
+            domains.append(f"{concat}county.{state_abbr}.gov")
+        if is_city:
+            domains.append(f"{concat}{state_abbr}.gov")
+            domains.append(f"cityof{concat}{state_abbr}.gov")
+
+        # {name}.{state}.gov — structured state gov subdomains
+        domains.append(f"{concat}.{state_abbr}.gov")
+
+    if state_abbr == "ca":
+        # ----- California-specific patterns -----
+        # CA counties: many use .ca.gov or .ca.us subdomains
+        # e.g., gis.lacounty.gov, gis.sjgov.org (San Joaquin)
+        if is_county:
+            # {initials}gov.org — e.g., sjgov.org for San Joaquin
+            if len(initials) >= 2:
+                domains.append(f"{initials}gov.org")
+            # First word only: e.g., "placer" from "Placer County"
+            domains.append(f"{first_word}.ca.gov")
+            domains.append(f"{first_word}county.org")
+        if is_city:
+            # Many CA cities: ci.{name}.ca.us
+            domains.append(f"ci.{concat}.ca.us")
+            # {name}.ca.us
+            domains.append(f"{concat}.ca.us")
+
+    elif state_abbr == "oh":
+        # ----- Ohio-specific patterns -----
+        # OH counties frequently use co.{name}.oh.us (already generated above)
+        # and also {name}countyoh.org, {name}ohio.gov, {name}oh.us
+        if is_county:
+            domains.append(f"{concat}countyoh.org")
+            domains.append(f"{concat}ohio.gov")
+            domains.append(f"{concat}oh.us")
+            domains.append(f"{concat}countyohio.gov")
+            # OH auditor/engineer pattern: {name}countyauditor.org
+            # (auditors often host the GIS/parcel data)
+            domains.append(f"{concat}countyauditor.org")
+            domains.append(f"{concat}countyengineer.org")
+        if is_city:
+            domains.append(f"{concat}ohio.gov")
+            domains.append(f"ci.{concat}.oh.us")
+            domains.append(f"{concat}.oh.us")
+
+    elif state_abbr == "fl":
+        # ----- Florida-specific patterns -----
+        # FL counties: {name}countyfl.gov, {name}fl.gov, {name}county.org
+        # Many FL counties host GIS through property appraiser offices
+        if is_county:
+            domains.append(f"{concat}countyfl.gov")
+            domains.append(f"{concat}fl.gov")
+            domains.append(f"{concat}county.org")
+            domains.append(f"{concat}fl.us")
+            # FL property appraiser GIS pattern
+            domains.append(f"{concat}pa.com")
+            domains.append(f"{concat}appraiser.com")
+        if is_city:
+            domains.append(f"{concat}fl.gov")
+            domains.append(f"{concat}fl.us")
+            domains.append(f"ci.{concat}.fl.us")
+
+    elif state_abbr == "tx":
+        # ----- Texas-specific patterns -----
+        # TX entities: {name}tx.gov, {name}texas.gov, {name}tx.us
+        # Many TX cities use {name}tx.gov; counties use {name}county.org
+        if is_county:
+            domains.append(f"{concat}countytx.org")
+            domains.append(f"{concat}county.org")
+            domains.append(f"{concat}tx.us")
+            domains.append(f"{concat}countytx.gov")
+            # TX appraisal district pattern (CADs host GIS data)
+            domains.append(f"{concat}cad.org")
+            domains.append(f"{concat}ad.org")
+        if is_city:
+            domains.append(f"{concat}tx.gov")
+            domains.append(f"{concat}texas.gov")
+            domains.append(f"{concat}tx.us")
+            domains.append(f"ci.{concat}.tx.us")
 
     # Deduplicate, preserving order; exclude the homepage domain itself
     homepage_domain = ""
