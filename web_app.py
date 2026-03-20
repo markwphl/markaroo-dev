@@ -811,11 +811,33 @@ document.getElementById('url-input').addEventListener('input', () => {
 });
 
 async function validateUrlField(url) {
-  // Quick client-side check
-  if (!url.startsWith('http://') && !url.startsWith('https://')) {
-    urlFeedback.textContent = 'URL must start with http:// or https://';
-    urlFeedback.className = 'invalid';
-    return false;
+  const mode = getSelectedMode();
+
+  // In discovery mode, accept jurisdiction names (bare text) as well as URLs
+  if (mode === 'homepage') {
+    // If it starts with www., treat as URL — auto-prepend https://
+    if (url.startsWith('www.')) {
+      url = 'https://' + url;
+      document.getElementById('url-input').value = url;
+    }
+    // Bare text (no scheme) is a jurisdiction name — skip client-side URL check
+    if (!url.startsWith('http://') && !url.startsWith('https://')) {
+      urlFeedback.textContent = '\u2713 Will search for: ' + url;
+      urlFeedback.className = 'valid';
+      return true;
+    }
+  } else {
+    // Direct mode: auto-prepend https:// for www. or bare domains
+    if (url.startsWith('www.')) {
+      url = 'https://' + url;
+      document.getElementById('url-input').value = url;
+    }
+    // Quick client-side check for direct mode
+    if (!url.startsWith('http://') && !url.startsWith('https://')) {
+      urlFeedback.textContent = 'URL must start with http:// or https://';
+      urlFeedback.className = 'invalid';
+      return false;
+    }
   }
   urlFeedback.innerHTML = '<span class="spinner"></span> Checking URL...';
   urlFeedback.className = 'checking';
@@ -904,10 +926,13 @@ form.addEventListener('submit', async (e) => {
   let url = document.getElementById('url-input').value.trim();
   if (!url) return;
 
-  // Auto-prepend https:// if missing — but only in direct mode.
-  // In discovery mode, bare text is a jurisdiction name, not a URL.
+  // Auto-prepend https:// for www. inputs (both modes) and bare text in direct mode.
+  // In discovery mode, bare text without www. is a jurisdiction name, not a URL.
   const currentMode = getSelectedMode();
-  if (currentMode === 'direct' && !url.startsWith('http://') && !url.startsWith('https://')) {
+  if (url.startsWith('www.')) {
+    url = 'https://' + url;
+    document.getElementById('url-input').value = url;
+  } else if (currentMode === 'direct' && !url.startsWith('http://') && !url.startsWith('https://')) {
     url = 'https://' + url;
     document.getElementById('url-input').value = url;
   }
@@ -922,7 +947,9 @@ form.addEventListener('submit', async (e) => {
   document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
   document.querySelector('.tab-btn[data-tab="progress"]').classList.add('active');
   btn.disabled = true;
-  statusLine.innerHTML = '<span class="spinner"></span> Validating URL&hellip;';
+  const statusLabel = (currentMode === 'homepage' && !url.startsWith('http'))
+    ? 'Searching for jurisdiction&hellip;' : 'Validating URL&hellip;';
+  statusLine.innerHTML = '<span class="spinner"></span> ' + statusLabel;
   addLine('log', 'Starting scan for: ' + url);
 
   // Start scan
