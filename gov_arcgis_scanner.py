@@ -441,9 +441,10 @@ EXCLUDE_LAYER_KEYWORDS = [
     "trails network", "bus stops", "pavement condition", "pavement index",
     "street sweeping", "guardrails", "handicap ramps", "street lights",
     "traffic signal", "truck routes", "crossroads", "street centerlines",
-    "road closures",
+    "road closures", "railroads", "hwy labels", "curbs", "curblines", "caltrans",
     "snow routes", "snow zones", "snow plowing routes", "snow removal",
     "snow emergency",
+    "stops", "traffic stops", "speed zones", "speed limit",
     # Fire / Emergency (note: "fire districts", "fire response districts",
     # "fire tax districts" are planning reference boundaries — NOT excluded here.
     # They are excluded only when in a Fire service folder via service-path exclusion.)
@@ -459,8 +460,8 @@ EXCLUDE_LAYER_KEYWORDS = [
     "amusement park", "open air vending",
     "alcohol beverage control",
     # Parks (standalone)
-    "pools", "community centers", "park lights", "park pathways",
-    "park points",
+    "pools", "community centers", "park lights", "park parking",
+    "park pathways", "park points", "trail signs",
     # Utilities
     "water hydrant", "water meter", "water service", "sewer", "sanitary",
     "storm drain", "recycled water", "irrigation controller",
@@ -1622,6 +1623,13 @@ HARD_EXCLUSION_PATTERNS = [
     re.compile(r"^Lead_Copper", re.IGNORECASE),
     # Snow/winter operations — Public Works, not planning
     re.compile(r"(?:^|[\s_])Snow(?:[\s_]|$)", re.IGNORECASE),
+    # Speed/traffic operations
+    re.compile(r"(?:^|[\s_])Speed(?:[\s_]|$)", re.IGNORECASE),
+    # Copy/duplicate layers (data management artifacts)
+    re.compile(r"[_\s]copy\b", re.IGNORECASE),
+    re.compile(r"_copy$", re.IGNORECASE),
+    # Library cards — not planning
+    re.compile(r"Library\s*Card", re.IGNORECASE),
 ]
 
 

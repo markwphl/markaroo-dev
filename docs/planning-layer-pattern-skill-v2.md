@@ -141,7 +141,7 @@ When the following signals are present **without** accompanying Tier 1 or Tier 2
 
 ### Public Works / Transportation
 Service name tokens: `PW_`, `SCL`, `RTC_`, `Bus_Stops`, `LIVE_SCL`, `DPW`, `PublicWorks`  
-Layer name keywords: `Streets`, `Major Streets`, `Bike Trails`, `Bicycle Lane`, `Bicycle Route`, `Equestrian Trails`, `Trail Crossing`, `Trailheads`, `Trail Projects`, `Trails Network`, `Bus Stops`, `Pavement Condition`, `Pavement Index`, `Street Sweeping`, `Guardrails`, `Handicap Ramps`, `Street Lights`, `Traffic Signal`, `Truck Routes`, `Crossroads`, `Street Centerlines`, `Road Closures`, `Snow Routes`, `Snow Zones`, `Snow Plowing Routes`, `Snow Removal`, `Snow Emergency`
+Layer name keywords: `Streets`, `Major Streets`, `Bike Trails`, `Bicycle Lane`, `Bicycle Route`, `Equestrian Trails`, `Trail Crossing`, `Trailheads`, `Trail Projects`, `Trails Network`, `Bus Stops`, `Stops`, `Traffic Stops`, `Pavement Condition`, `Pavement Index`, `Street Sweeping`, `Guardrails`, `Handicap Ramps`, `Street Lights`, `Traffic Signal`, `Truck Routes`, `Crossroads`, `Street Centerlines`, `Road Closures`, `Snow Routes`, `Snow Zones`, `Snow Plowing Routes`, `Snow Removal`, `Snow Emergency`, `Speed Zones`, `Speed Limit`, `Curbs`, `Curblines`, `Caltrans`, `Railroads`, `HWY Labels`
 
 ### Fire / Emergency Services
 Service name tokens: `FD_`, `PHANTOMS`, `Fire_`, `EMS_`  
@@ -153,7 +153,7 @@ Layer name keywords: `Business Licenses`, `Active Business Licenses`, `Gaming Re
 
 ### Parks and Recreation
 Service name tokens: `Parks_Protected_Use`, `Pools_View`, `Community_Centers_View`  
-Layer name keywords: `Parks` (standalone, no land use/planning qualifier), `Pools`, `Community Centers`, `Park Areas`, `Park Lights`, `Park Pathways`, `Park Points`, `Public Parks`
+Layer name keywords: `Parks` (standalone, no land use/planning qualifier), `Pools`, `Community Centers`, `Park Areas`, `Park Lights`, `Park Parking`, `Park Pathways`, `Park Points`, `Public Parks`, `Trail Signs`
 
 ### Utilities
 Service name tokens: `Utilities`, `Water_`, `Sewer_`, `Storm_`, `Stormwater_`, `Recycled_Water`, `Lucity`  
