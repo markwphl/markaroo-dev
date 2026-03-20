@@ -75,6 +75,7 @@ import socket
 import sys
 import time
 import threading
+import warnings
 from collections import defaultdict
 from difflib import SequenceMatcher
 from typing import Optional
@@ -82,12 +83,8 @@ from urllib.parse import urljoin, urlparse
 
 import requests
 import urllib3
+from requests.adapters import HTTPAdapter
 
-# Suppress InsecureRequestWarning for government sites with bad SSL certs.
-# Many government servers have misconfigured or self-signed certificates;
-# this prevents noisy warnings in production logs while still allowing
-# SSL-fallback requests where needed.
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font, PatternFill
 
@@ -101,12 +98,28 @@ logger = logging.getLogger(__name__)
 # loopback, and reserved IP ranges.  All URLs obtained from untrusted sources
 # (LLM responses, crawled HTML) MUST pass ``is_safe_url()`` before being
 # fetched.
+#
+# Additionally, the ``SSRFSafeAdapter`` validates resolved IPs at connection
+# time to prevent DNS rebinding attacks (TOCTOU race condition where a
+# hostname resolves to a safe IP during validation but a private IP during
+# the actual connection).
 
 # Maximum allowed length for any URL we process (prevents memory abuse)
 _MAX_URL_LENGTH = 2048
 
 # Maximum allowed length for jurisdiction name input
 _MAX_JURISDICTION_NAME_LENGTH = 200
+
+
+def _is_private_ip(ip_str: str) -> bool:
+    """Return True if *ip_str* is a private, loopback, reserved, or
+    link-local IP address that should be blocked for SSRF protection."""
+    try:
+        addr = ipaddress.ip_address(ip_str)
+        return (addr.is_private or addr.is_loopback or
+                addr.is_reserved or addr.is_link_local)
+    except ValueError:
+        return False
 
 
 def _resolve_hostname(hostname: str) -> list[str]:
@@ -145,20 +158,17 @@ def is_safe_url(url: str) -> bool:
         return False
 
     # Check if the hostname is a raw IP address first
+    if _is_private_ip(hostname):
+        return False
+
+    # Not a raw IP — resolve DNS and check each resulting address
     try:
-        addr = ipaddress.ip_address(hostname)
-        if addr.is_private or addr.is_loopback or addr.is_reserved or addr.is_link_local:
-            return False
+        ipaddress.ip_address(hostname)
     except ValueError:
-        # Not a raw IP — resolve DNS and check each resulting address
         resolved = _resolve_hostname(hostname)
         for ip_str in resolved:
-            try:
-                addr = ipaddress.ip_address(ip_str)
-                if addr.is_private or addr.is_loopback or addr.is_reserved or addr.is_link_local:
-                    return False
-            except ValueError:
-                continue
+            if _is_private_ip(ip_str):
+                return False
 
     return True
 
@@ -674,12 +684,55 @@ progress = ProgressTracker()
 # HTTP helpers
 # ---------------------------------------------------------------------------
 
+class SSRFSafeAdapter(HTTPAdapter):
+    """HTTPAdapter that validates resolved IPs at connection time.
+
+    Prevents DNS rebinding attacks (TOCTOU) by re-resolving and checking
+    the target hostname immediately before the TCP connection is made.
+    This closes the window between ``is_safe_url()`` validation and the
+    actual HTTP request that a standard two-step approach leaves open.
+    """
+
+    def send(self, request, stream=False, timeout=None, verify=True,
+             cert=None, proxies=None):
+        parsed = urlparse(request.url)
+        hostname = parsed.hostname
+        if hostname:
+            # Resolve and validate at connection time
+            resolved = _resolve_hostname(hostname)
+            for ip_str in resolved:
+                if _is_private_ip(ip_str):
+                    raise ConnectionError(
+                        f"SSRF blocked: {hostname} resolves to "
+                        f"private/reserved IP {ip_str}"
+                    )
+        return super().send(request, stream=stream, timeout=timeout,
+                            verify=verify, cert=cert, proxies=proxies)
+
+
+# Track domains that triggered SSL fallback (prevent log spam)
+_ssl_warned_domains: set[str] = set()
+
+
 session = requests.Session()
 session.headers.update(HEADERS)
+# Mount the SSRF-safe adapter for both http and https
+session.mount("https://", SSRFSafeAdapter())
+session.mount("http://", SSRFSafeAdapter())
 
 
 def fetch(url: str, timeout: int = REQUEST_TIMEOUT) -> Optional[requests.Response]:
-    """GET with retries and error handling."""
+    """GET with retries, SSL fallback, and SSRF-safe DNS validation.
+
+    SECURITY: The session uses ``SSRFSafeAdapter`` which re-validates
+    resolved IPs at connection time, preventing DNS rebinding attacks.
+
+    SSL fallback: If the initial request fails with an SSL certificate
+    error, retries once with ``verify=False`` and logs a warning.  This
+    accommodates government servers with misconfigured or self-signed
+    certificates, which are common.  The warning is logged once per
+    domain to avoid spamming the progress log.
+    """
     last_error = None
     for attempt in range(3):
         try:
@@ -688,10 +741,27 @@ def fetch(url: str, timeout: int = REQUEST_TIMEOUT) -> Optional[requests.Respons
             return r
         except requests.exceptions.SSLError:
             # Retry once without SSL verification for government sites
-            # with misconfigured certificates
+            # with misconfigured certificates.
+            # SECURITY: Log a warning so operators can see which domains
+            # are using insecure SSL fallback (once per domain).
+            parsed = urlparse(url)
+            domain = parsed.netloc
+            if domain not in _ssl_warned_domains:
+                _ssl_warned_domains.add(domain)
+                logger.warning("SSL certificate verification failed for %s "
+                               "— falling back to unverified request. "
+                               "Consider adding a valid certificate.",
+                               domain)
+                progress.log(f"    ⚠ SSL cert issue for {domain} — "
+                             f"using insecure fallback (MITM risk)")
             try:
-                r = session.get(url, timeout=timeout, allow_redirects=True,
-                                verify=False)
+                with warnings.catch_warnings():
+                    warnings.filterwarnings(
+                        "ignore",
+                        category=urllib3.exceptions.InsecureRequestWarning,
+                    )
+                    r = session.get(url, timeout=timeout,
+                                    allow_redirects=True, verify=False)
                 r.raise_for_status()
                 return r
             except requests.RequestException as e:
@@ -767,9 +837,23 @@ def validate_url(url: str, mode: str = "homepage") -> dict:
                 "message": f"URL returned HTTP {r.status_code}.",
                 "status_code": r.status_code}
     except requests.exceptions.SSLError:
-        # Retry without SSL verification for misconfigured government certs
+        # Retry without SSL verification for misconfigured government certs.
+        # SECURITY: Log a warning so operators can see which domains need
+        # certificate fixes.
+        parsed_host = urlparse(url).netloc
+        if parsed_host not in _ssl_warned_domains:
+            _ssl_warned_domains.add(parsed_host)
+            logger.warning("SSL certificate verification failed for %s "
+                           "during validation — using insecure fallback.",
+                           parsed_host)
         try:
-            r = session.head(url, timeout=10, allow_redirects=True, verify=False)
+            with warnings.catch_warnings():
+                warnings.filterwarnings(
+                    "ignore",
+                    category=urllib3.exceptions.InsecureRequestWarning,
+                )
+                r = session.head(url, timeout=10, allow_redirects=True,
+                                 verify=False)
             if r.status_code < 400:
                 return {"valid": True,
                         "message": f"URL is reachable (HTTP {r.status_code}, SSL certificate issue bypassed).",

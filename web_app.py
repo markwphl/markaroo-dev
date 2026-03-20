@@ -27,6 +27,7 @@ import os
 import queue
 import re
 import threading
+import time
 import uuid
 from html import escape
 
@@ -43,8 +44,9 @@ app = Flask(__name__)
 OUTPUT_DIR = os.path.join(os.path.dirname(__file__), "output")
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-# In-flight scan jobs: job_id -> {queue, result, status}
+# In-flight scan jobs: job_id -> {queue, result, status, created_at}
 _jobs: dict[str, dict] = {}
+_jobs_lock = threading.Lock()
 
 # Maximum URL length accepted from user input (prevents abuse)
 _MAX_INPUT_URL_LENGTH = 2048
@@ -52,6 +54,55 @@ _MAX_INPUT_URL_LENGTH = 2048
 # Regex for valid job IDs — must be exactly 12 hex characters.
 # SECURITY: This prevents path traversal attacks in /api/download/<job_id>/
 _JOB_ID_PATTERN = re.compile(r"^[0-9a-f]{12}$")
+
+# ---------------------------------------------------------------------------
+# Fix #3 — Concurrent scan rate limiting
+# ---------------------------------------------------------------------------
+# Prevents resource exhaustion from too many simultaneous scans.  Each scan
+# generates hundreds of outbound HTTP requests; unbounded concurrency could
+# exhaust sockets, threads, and upstream API rate limits.
+
+_MAX_CONCURRENT_SCANS = 3
+_scan_semaphore = threading.Semaphore(_MAX_CONCURRENT_SCANS)
+
+# ---------------------------------------------------------------------------
+# Fix #4 — Job TTL cleanup
+# ---------------------------------------------------------------------------
+# Completed jobs are cleaned up after this TTL (seconds).  Prevents unbounded
+# memory growth from the _jobs dict over long-running server sessions.
+# Output files on disk are NOT deleted (the admin manages disk space).
+
+_JOB_TTL_SECONDS = 3600  # 1 hour
+_CLEANUP_INTERVAL_SECONDS = 300  # run cleanup every 5 minutes
+
+
+def _cleanup_old_jobs():
+    """Remove completed/errored jobs older than _JOB_TTL_SECONDS."""
+    now = time.time()
+    with _jobs_lock:
+        expired = [
+            jid for jid, job in _jobs.items()
+            if job.get("status") in ("done", "error")
+            and now - job.get("created_at", now) > _JOB_TTL_SECONDS
+        ]
+        for jid in expired:
+            del _jobs[jid]
+    if expired:
+        app.logger.info("Cleaned up %d expired job(s)", len(expired))
+
+
+def _cleanup_loop():
+    """Background thread that periodically purges expired jobs."""
+    while True:
+        time.sleep(_CLEANUP_INTERVAL_SECONDS)
+        try:
+            _cleanup_old_jobs()
+        except Exception:
+            pass  # never crash the cleanup thread
+
+
+_cleanup_thread = threading.Thread(target=_cleanup_loop, daemon=True)
+_cleanup_thread.start()
 
 
 def _is_valid_job_id(job_id: str) -> bool:
@@ -839,7 +890,11 @@ async function validateUrlField(url) {
       return false;
     }
   }
-  urlFeedback.innerHTML = '<span class="spinner"></span> Checking URL...';
+  urlFeedback.textContent = '';
+  const chkSpinner = document.createElement('span');
+  chkSpinner.className = 'spinner';
+  urlFeedback.appendChild(chkSpinner);
+  urlFeedback.appendChild(document.createTextNode(' Checking URL...'));
   urlFeedback.className = 'checking';
   try {
     const mode = getSelectedMode();
@@ -869,7 +924,7 @@ async function validateUrlField(url) {
 function showPrompt(jobId, question, options) {
   currentJobId = jobId;
   promptQuestion.textContent = question;
-  promptOptions.innerHTML = '';
+  promptOptions.replaceChildren();
   promptInputRow.classList.remove('visible');
 
   if (options && options.length > 0) {
@@ -937,19 +992,20 @@ form.addEventListener('submit', async (e) => {
     document.getElementById('url-input').value = url;
   }
 
-  // Reset UI
-  box.innerHTML = ''; box.style.display = 'block';
-  summaryDiv.style.display = 'none'; summaryBody.innerHTML = ''; summaryCards.innerHTML = '';
-  downloadsDiv.style.display = 'none'; downloadsDiv.innerHTML = '';
-  resultsDiv.style.display = 'none'; resultsDiv.innerHTML = '';
+  // Reset UI — use replaceChildren() instead of innerHTML = '' to avoid
+  // DOM parsing of potentially tainted content.
+  box.replaceChildren(); box.style.display = 'block';
+  summaryDiv.style.display = 'none'; summaryBody.replaceChildren(); summaryCards.replaceChildren();
+  downloadsDiv.style.display = 'none'; downloadsDiv.replaceChildren();
+  resultsDiv.style.display = 'none'; resultsDiv.replaceChildren();
   tabs.classList.add('visible');
   // Activate progress tab
   document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
   document.querySelector('.tab-btn[data-tab="progress"]').classList.add('active');
   btn.disabled = true;
   const statusLabel = (currentMode === 'homepage' && !url.startsWith('http'))
-    ? 'Searching for jurisdiction&hellip;' : 'Validating URL&hellip;';
-  statusLine.innerHTML = '<span class="spinner"></span> ' + statusLabel;
+    ? 'Searching for jurisdiction\u2026' : 'Validating URL\u2026';
+  setStatusIcon('spinner', statusLabel);
   addLine('log', 'Starting scan for: ' + url);
 
   // Start scan
@@ -988,7 +1044,7 @@ form.addEventListener('submit', async (e) => {
   evtSource.addEventListener('stat', (e) => { addLine('stat', e.data); });
   evtSource.addEventListener('error_msg', (e) => {
     addLine('error', e.data);
-    statusLine.innerHTML = '<span style="color:var(--red);">&#10007;</span> ' + esc(e.data.substring(0, 80));
+    setStatusIcon('error', e.data.substring(0, 80));
   });
 
   // Handle prompt events (mid-scan user interaction)
@@ -999,25 +1055,37 @@ form.addEventListener('submit', async (e) => {
 
   evtSource.addEventListener('summary', (e) => {
     const stats = JSON.parse(e.data);
-    summaryBody.innerHTML = '';
-    summaryCards.innerHTML = '';
+    summaryBody.replaceChildren();
+    summaryCards.replaceChildren();
 
-    // Build summary cards for key stats
+    // Build summary cards for key stats (DOM API, no innerHTML)
     const cardKeys = ['ArcGIS REST endpoints found', 'Total feature layers enumerated',
                       'Layers after keyword filter', 'Final layers exported'];
     for (const k of cardKeys) {
       if (stats[k] !== undefined) {
         const card = document.createElement('div');
         card.className = 'summary-card';
-        card.innerHTML = `<div class="value">${esc(String(stats[k]))}</div><div class="label">${esc(k)}</div>`;
+        const valDiv = document.createElement('div');
+        valDiv.className = 'value';
+        valDiv.textContent = String(stats[k]);
+        const labDiv = document.createElement('div');
+        labDiv.className = 'label';
+        labDiv.textContent = k;
+        card.appendChild(valDiv);
+        card.appendChild(labDiv);
         summaryCards.appendChild(card);
       }
     }
 
-    // Full stats table
+    // Full stats table (DOM API, no innerHTML)
     for (const [k, v] of Object.entries(stats)) {
       const tr = document.createElement('tr');
-      tr.innerHTML = `<th>${esc(k)}</th><td>${esc(String(v))}</td>`;
+      const th = document.createElement('th');
+      th.textContent = k;
+      const td = document.createElement('td');
+      td.textContent = String(v);
+      tr.appendChild(th);
+      tr.appendChild(td);
       summaryBody.appendChild(tr);
     }
   });
@@ -1029,37 +1097,82 @@ form.addEventListener('submit', async (e) => {
     btn.disabled = false;
 
     if (data.error) {
-      statusLine.innerHTML = '<span style="color:var(--red);">&#10007;</span> Scan failed';
+      setStatusIcon('error', 'Scan failed');
       addLine('error', data.error);
       return;
     }
 
     const layerCount = (data.layers && data.layers.length) || 0;
-    statusLine.innerHTML = '<span style="color:var(--green);">&#10003;</span> Scan complete &mdash; ' + layerCount + ' layers found';
+    setStatusIcon('success', 'Scan complete \u2014 ' + layerCount + ' layers found');
     addLine('done', 'Scan complete! Found ' + layerCount + ' planning-related feature layers.');
 
-    // Download section with instructions
-    let dlHtml = '<h3>Download Results</h3>';
-    dlHtml += '<p class="download-note">Click a button below to save the file. Your browser will prompt you to choose a download location.</p>';
+    // Download section (DOM API, no innerHTML)
+    downloadsDiv.replaceChildren();
+    const dlH3 = document.createElement('h3');
+    dlH3.textContent = 'Download Results';
+    downloadsDiv.appendChild(dlH3);
+    const dlNote = document.createElement('p');
+    dlNote.className = 'download-note';
+    dlNote.textContent = 'Click a button below to save the file. Your browser will prompt you to choose a download location.';
+    downloadsDiv.appendChild(dlNote);
+
+    // Download icon SVG (static, safe to set once)
+    const dlSvg = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>';
+    function makeDlLink(href, label) {
+      const a = document.createElement('a');
+      a.className = 'btn-download';
+      a.href = href;
+      a.setAttribute('download', '');
+      // SVG icon is static/safe markup — only used here
+      const iconSpan = document.createElement('span');
+      iconSpan.innerHTML = dlSvg;
+      a.appendChild(iconSpan.firstChild);
+      a.appendChild(document.createTextNode(label));
+      return a;
+    }
     if (data.xl_file) {
-      dlHtml += `<a class="btn-download" href="/api/download/${job_id}/xlsx" download><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>Save as Excel (.xlsx)</a>`;
+      downloadsDiv.appendChild(makeDlLink('/api/download/' + encodeURIComponent(job_id) + '/xlsx', 'Save as Excel (.xlsx)'));
     }
     if (data.md_file) {
-      dlHtml += `<a class="btn-download" href="/api/download/${job_id}/md" download><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>Save as Markdown (.md)</a>`;
+      downloadsDiv.appendChild(makeDlLink('/api/download/' + encodeURIComponent(job_id) + '/md', 'Save as Markdown (.md)'));
     }
-    downloadsDiv.innerHTML = dlHtml;
     downloadsDiv.style.display = 'block';
 
-    // Build preview table
+    // Build preview table (DOM API, no innerHTML for dynamic data)
     if (data.layers && data.layers.length) {
-      let html = '<h3>Results Preview (' + layerCount + ' layers)</h3>';
-      html += '<div class="table-scroll">';
-      html += '<table><thead><tr><th>GIS Layer Name</th><th>Source System</th><th>Collection</th><th>API Endpoint</th><th>Time Period</th><th>Update Freq.</th></tr></thead><tbody>';
-      data.layers.forEach(l => {
-        html += `<tr><td>${esc(l.layer_name)}</td><td>Esri ArcGIS</td><td>API</td><td title="${esc(l.layer_url)}">${esc(l.layer_url)}</td><td>Current</td><td>Ad Hoc</td></tr>`;
+      resultsDiv.replaceChildren();
+      const rH3 = document.createElement('h3');
+      rH3.textContent = 'Results Preview (' + layerCount + ' layers)';
+      resultsDiv.appendChild(rH3);
+
+      const scrollDiv = document.createElement('div');
+      scrollDiv.className = 'table-scroll';
+      const table = document.createElement('table');
+      const thead = document.createElement('thead');
+      const headTr = document.createElement('tr');
+      ['GIS Layer Name','Source System','Collection','API Endpoint','Time Period','Update Freq.'].forEach(h => {
+        const th = document.createElement('th');
+        th.textContent = h;
+        headTr.appendChild(th);
       });
-      html += '</tbody></table></div>';
-      resultsDiv.innerHTML = html;
+      thead.appendChild(headTr);
+      table.appendChild(thead);
+
+      const tbody = document.createElement('tbody');
+      data.layers.forEach(l => {
+        const tr = document.createElement('tr');
+        const cells = [l.layer_name, 'Esri ArcGIS', 'API', l.layer_url, 'Current', 'Ad Hoc'];
+        cells.forEach((val, i) => {
+          const td = document.createElement('td');
+          td.textContent = val;
+          if (i === 3) td.title = val;  // tooltip on API Endpoint
+          tr.appendChild(td);
+        });
+        tbody.appendChild(tr);
+      });
+      table.appendChild(tbody);
+      scrollDiv.appendChild(table);
+      resultsDiv.appendChild(scrollDiv);
     }
 
     // Auto-switch to results tab if we have results, otherwise summary
@@ -1094,6 +1207,27 @@ function addLine(cls, text) {
   div.textContent = text;
   box.appendChild(div);
   box.scrollTop = box.scrollHeight;
+}
+
+// Set status line with an icon type: 'spinner', 'success', 'error', or null
+function setStatusIcon(type, text) {
+  statusLine.replaceChildren();
+  if (type === 'spinner') {
+    const s = document.createElement('span');
+    s.className = 'spinner';
+    statusLine.appendChild(s);
+  } else if (type === 'success') {
+    const s = document.createElement('span');
+    s.style.color = 'var(--green)';
+    s.textContent = '\u2713';
+    statusLine.appendChild(s);
+  } else if (type === 'error') {
+    const s = document.createElement('span');
+    s.style.color = 'var(--red)';
+    s.textContent = '\u2717';
+    statusLine.appendChild(s);
+  }
+  statusLine.appendChild(document.createTextNode(' ' + text));
 }
 
 function esc(s) {
@@ -1164,16 +1298,31 @@ def api_scan():
     if url and "/rest/services" in url.lower():
         mode = "direct"
 
+    # Opportunistically clean up expired jobs on each new submission
+    _cleanup_old_jobs()
+
     job_id = uuid.uuid4().hex[:12]
     q: queue.Queue = queue.Queue()
     interaction = InteractionRequest()
-    _jobs[job_id] = {"queue": q, "result": None, "status": "running",
-                     "interaction": interaction}
+    with _jobs_lock:
+        _jobs[job_id] = {"queue": q, "result": None, "status": "running",
+                         "interaction": interaction,
+                         "created_at": time.time()}
 
     def progress_cb(event_type: str, message: str):
         q.put((event_type, message))
 
     def run():
+        # SECURITY: Enforce concurrent scan limit to prevent resource
+        # exhaustion.  If the semaphore can't be acquired within 30s,
+        # report the server as busy.
+        if not _scan_semaphore.acquire(timeout=30):
+            _jobs[job_id]["status"] = "error"
+            q.put(("error_msg", "Server busy — too many concurrent scans. "
+                                "Please try again shortly."))
+            q.put(("done", json.dumps({
+                "error": "Server busy — too many concurrent scans."})))
+            return
         try:
             job_output_dir = os.path.join(OUTPUT_DIR, job_id)
             result = scan(url, output_dir=job_output_dir,
@@ -1192,6 +1341,8 @@ def api_scan():
             _jobs[job_id]["status"] = "error"
             q.put(("error_msg", str(exc)))
             q.put(("done", json.dumps({"error": str(exc)})))
+        finally:
+            _scan_semaphore.release()
 
     threading.Thread(target=run, daemon=True).start()
     return jsonify({"job_id": job_id})
