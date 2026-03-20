@@ -176,7 +176,7 @@ When the service path contains these tokens AND the layer is NOT in a co-occurri
 ### 4.2 — Layer Name Exclusions: Public Works / Transportation Infrastructure
 Exclude these layer names regardless of service, unless the service is a confirmed planning service (Tier 1 signal present):
 
-`RAILROADS`, `ROAD` (standalone exact match), `ROADS` (standalone exact match), `HWY LABELS`, `STRUCTURES`, `BUILDING FOOTPRINTS` (standalone — not `Building Outlines` in a parcel service), `FIRE HYDRANTS`, `FIRE HYDRANTS AND WATER POINTS`, `FIRE WATER POINTS`, `FIRE WATER POINTS`, `Bike Trails`, `Bicycle Lane`, `Bicycle Route`, `Equestrian Trails`, `Trailheads`, `Bus Stops` (standalone operational — not in planning service), `Pavement Condition`, `Pavement Index`, `Pavement_Index`, `Street Sweeping`, `Guardrails`, `Handicap Ramps`, `Street Lights`, `Traffic Signal`, `Truck Routes`, `Street Centerlines`, `Road Closures`, 'Curbs', 'Caltrans', 'Curblines'
+`RAILROADS`, `ROAD` (standalone exact match), `ROADS` (standalone exact match), `HWY LABELS`, `STRUCTURES`, `BUILDING FOOTPRINTS` (standalone — not `Building Outlines` in a parcel service), `FIRE HYDRANTS`, `FIRE HYDRANTS AND WATER POINTS`, `FIRE WATER POINTS`, `FIRE WATER POINTS`, `Bike Trails`, `Bicycle Lane`, `Bicycle Route`, `Equestrian Trails`, `Trailheads`, `Bus Stops` (standalone operational — not in planning service), `Pavement Condition`, `Pavement Index`, `Pavement_Index`, `Street Sweeping`, `Guardrails`, `Handicap Ramps`, `Street Lights`, `Traffic Signal`, `Truck Routes`, `Street Centerlines`, `Road Closures`, 'Curbs', 'Caltrans', 'Curblines', 'Stops', 'Traffic Stops', 'Snow*', 'Speed*' , 'Speed Zones', 'Speed Limit*, '*_copy', '* copy'
 
 ### 4.3 — Layer Name Exclusions: Fire / Emergency Operational
 Exclude when NOT in a confirmed planning service:
@@ -195,7 +195,7 @@ Note: `Fire Districts`, `Fire Response Districts`, `Fire Tax Districts` are **pl
 `Police Beats`, `Police Traffic Citations`, `Crime`, `Reporting Districts` (police), `Police Incidents`
 
 ### 4.7 — Layer Name Exclusions: Parks Operational (when in Parks service)
-`Pools`, `Park Lights`, `Park Pathways`, `Park Points`
+`Pools`, `Park Lights`, `Park Parking`, `Trail Sign*`, 'Park Points'
 
 Note: `Park Areas`, `Public Parks`, `Park Facilities` are **included** when not in a Parks operational service folder. See Cluster B/J.
 
@@ -205,7 +205,7 @@ Note: `Park Areas`, `Public Parks`, `Park Facilities` are **included** when not 
 Note: School district/catchment/attendance zone boundaries are **included** — see Cluster G.
 
 ### 4.9 — Layer Name Exclusions: Basemap / Imagery
-`Aerial Imagery`, `Historical Imagery`, `Basemap`, `Ortho`, `Orthophoto`, `Satellite`, `Imagery` , `History Point*`, `HistoryPolygon*`, `Spatial Polyline*`, `SpatialCollectionPolyline*`, `Location` (exact match — generic geometry record), `Converted_Graphics*`, `Feature.MAPREAD.*`, `CityWide.SDE.*`, 'Spatial', 'Spatial_Collection', 'Library Card*', 'Hisory Polygon', 'SpatialCollectionPoint', 'SpatialCollecitonPolygon'
+`Aerial Imagery`, `Historical Imagery`, `Basemap`, `Ortho`, `Orthophoto`, `Satellite`, `Imagery` , `History Point*`, `HistoryPolygon*`, `Spatial Polyline*`, `SpatialCollectionPolyline*`, `Location` (exact match — generic geometry record), `Converted_Graphics*`, `Feature.MAPREAD.*`, `CityWide.SDE.*`, 'Spatial', 'Spatial_Collection', 'Library Card*', 'Hisory Polygon', 'SpatialCollectionPoint', 'SpatialCollecitonPolygon', 
 
 ### 4.10 — Hard Exclusion Patterns (Override All Rules)
 These patterns are excluded regardless of service path, Tier 1 boost, or any other signal. No exceptions.
@@ -217,7 +217,7 @@ These patterns are excluded regardless of service path, Tier 1 boost, or any oth
 `History Point*`, `HistoryPolygon*`, `Spatial Polyline*`, `SpatialCollectionPolyline*`, `Location` (exact match — generic geometry record), `Converted_Graphics*`, `Feature.MAPREAD.*`, `CityWide.SDE.* ,  'Spatial*', 'Spatial_Collection', 'Library Card*', 'Hisory Polygon', 'SpatialCollectionPoint', 'SpatialCollecitonPolygon'
 
 **Generic/ambiguous layer names:**
-`Default` (exact match), `A_*` (annotation class prefix)
+`Default` (exact match), `A_*` (annotation class prefix), '*_copy', '* copy'
 
 **Imagery and graphics:**
 `*images*`, `*graphics*`, `*imagery*`, `*aerial*`, `*Converted_Graphics*`
