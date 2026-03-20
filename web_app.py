@@ -731,7 +731,7 @@ const MODE_CONFIG = {
     hint: 'Verify the output with your client for the correct feature layers and endpoint URLs.'
   },
   homepage: {
-    placeholder: 'City of Sunnyvale',
+    placeholder: 'Enter city/town/county name or its website',
     hint: 'Enter a jurisdiction name (e.g. "City of Sunnyvale") or a website URL (e.g. "https://www.sunnyvale.ca.gov").'
   }
 };
