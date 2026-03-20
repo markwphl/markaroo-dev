@@ -141,7 +141,7 @@ When the following signals are present **without** accompanying Tier 1 or Tier 2
 
 ### Public Works / Transportation
 Service name tokens: `PW_`, `SCL`, `RTC_`, `Bus_Stops`, `LIVE_SCL`, `DPW`, `PublicWorks`  
-Layer name keywords: `Streets`, `Major Streets`, `Bike Trails`, `Bicycle Lane`, `Bicycle Route`, `Equestrian Trails`, `Trail Crossing`, `Trailheads`, `Trail Projects`, `Trails Network`, `Bus Stops`, `Pavement Condition`, `Pavement Index`, `Street Sweeping`, `Guardrails`, `Handicap Ramps`, `Street Lights`, `Traffic Signal`, `Truck Routes`, `Crossroads`, `Street Centerlines`, `Road Closures`
+Layer name keywords: `Streets`, `Major Streets`, `Bike Trails`, `Bicycle Lane`, `Bicycle Route`, `Equestrian Trails`, `Trail Crossing`, `Trailheads`, `Trail Projects`, `Trails Network`, `Bus Stops`, `Pavement Condition`, `Pavement Index`, `Street Sweeping`, `Guardrails`, `Handicap Ramps`, `Street Lights`, `Traffic Signal`, `Truck Routes`, `Crossroads`, `Street Centerlines`, `Road Closures`, `Snow Routes`, `Snow Zones`, `Snow Plowing Routes`, `Snow Removal`, `Snow Emergency`
 
 ### Fire / Emergency Services
 Service name tokens: `FD_`, `PHANTOMS`, `Fire_`, `EMS_`  

@@ -442,6 +442,8 @@ EXCLUDE_LAYER_KEYWORDS = [
     "street sweeping", "guardrails", "handicap ramps", "street lights",
     "traffic signal", "truck routes", "crossroads", "street centerlines",
     "road closures",
+    "snow routes", "snow zones", "snow plowing routes", "snow removal",
+    "snow emergency",
     # Fire / Emergency (note: "fire districts", "fire response districts",
     # "fire tax districts" are planning reference boundaries — NOT excluded here.
     # They are excluded only when in a Fire service folder via service-path exclusion.)
@@ -1618,6 +1620,8 @@ HARD_EXCLUSION_PATTERNS = [
     # Lead/water quality data
     re.compile(r"^LeadWater_", re.IGNORECASE),
     re.compile(r"^Lead_Copper", re.IGNORECASE),
+    # Snow/winter operations — Public Works, not planning
+    re.compile(r"(?:^|[\s_])Snow(?:[\s_]|$)", re.IGNORECASE),
 ]
 
 
