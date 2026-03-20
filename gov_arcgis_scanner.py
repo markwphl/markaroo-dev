@@ -1023,7 +1023,9 @@ def guess_arcgis_urls(start_url: str) -> set[str]:
 _GIS_SUBDOMAIN_PREFIXES = ("gis", "maps", "mapping", "gisweb", "services",
                            "arcgis", "webgis", "egis", "ccmap", "gispublic",
                            "ags", "gisservices", "gis2", "gisweb2",
-                           "gisdata", "mapservices", "gisportal")
+                           "gisdata", "mapservices", "gisportal",
+                           "auditor",  # OH county auditors host GIS
+                           "gisapp")   # e.g. gisapp.mahoningcountyoh.gov
 
 
 def _extract_state_from_url(homepage_url: str) -> str:
@@ -1177,6 +1179,12 @@ def _generate_alternate_domains(jurisdiction_name: str,
     is_county = "county" in name_words_lower
     is_city = bool(name_words_lower & {"city", "town", "village", "borough"})
 
+    # Initials including entity type — used for state-specific abbreviation
+    # patterns where "County"/"City" contributes to the abbreviation.
+    # e.g., "Harris County" → "hc", "Seminole County" → "sc"
+    entity_initial = "c" if (is_county or is_city) else ""
+    initials_full = initials + entity_initial  # "hc" for Harris County
+
     # Build base-name variants (without TLD)
     bases: list[str] = []
     if is_county:
@@ -1262,16 +1270,24 @@ def _generate_alternate_domains(jurisdiction_name: str,
     elif state_abbr == "oh":
         # ----- Ohio-specific patterns -----
         # OH counties frequently use co.{name}.oh.us (already generated above)
-        # and also {name}countyoh.org, {name}ohio.gov, {name}oh.us
+        # and also {name}countyoh.org, {name}ohio.gov, {name}oh.us.
+        # IMPORTANT: In Ohio, County Auditor offices are the primary GIS/
+        # parcel data custodians, with domains like auditor.co.{name}.oh.us
+        # or {name}countyauditor.org.
         if is_county:
             domains.append(f"{concat}countyoh.org")
             domains.append(f"{concat}ohio.gov")
             domains.append(f"{concat}oh.us")
             domains.append(f"{concat}countyohio.gov")
-            # OH auditor/engineer pattern: {name}countyauditor.org
-            # (auditors often host the GIS/parcel data)
+            # OH auditor/engineer pattern (auditors host GIS/parcel data)
             domains.append(f"{concat}countyauditor.org")
             domains.append(f"{concat}countyengineer.org")
+            # Third-party custom domains (e.g. mcohio.org for Montgomery County)
+            if len(initials_full) >= 2:
+                domains.append(f"{initials_full}ohio.org")
+            # auditor.co.{name}.oh.us is a subdomain of co.{name}.oh.us
+            # — the "auditor" prefix is added to _GIS_SUBDOMAIN_PREFIXES
+            # below rather than duplicating the domain here.
         if is_city:
             domains.append(f"{concat}ohio.gov")
             domains.append(f"ci.{concat}.oh.us")
@@ -1280,15 +1296,29 @@ def _generate_alternate_domains(jurisdiction_name: str,
     elif state_abbr == "fl":
         # ----- Florida-specific patterns -----
         # FL counties: {name}countyfl.gov, {name}fl.gov, {name}county.org
-        # Many FL counties host GIS through property appraiser offices
+        # IMPORTANT: In Florida, Property Appraiser offices are independent
+        # constitutional officers and the primary GIS/parcel data custodians.
+        # Their domains are completely separate from county government and
+        # use inconsistent TLDs (.com, .net, .org, .us, .gov).
         if is_county:
             domains.append(f"{concat}countyfl.gov")
             domains.append(f"{concat}fl.gov")
             domains.append(f"{concat}county.org")
             domains.append(f"{concat}fl.us")
-            # FL property appraiser GIS pattern
+            # FL property appraiser GIS patterns (full name)
             domains.append(f"{concat}pa.com")
             domains.append(f"{concat}appraiser.com")
+            # FL property appraiser abbreviation patterns:
+            # {initials_full}pafl.org (e.g., scpafl.org for Seminole County)
+            # {initials_full}pao.us (e.g., bcpao.us for Brevard County)
+            # {initials_full}pa.com (e.g., flaglerpa.com)
+            # {initials_full}pa.net (e.g., bcpa.net for Broward County)
+            if len(initials_full) >= 2:
+                domains.append(f"{initials_full}pafl.org")
+                domains.append(f"{initials_full}pao.us")
+                domains.append(f"{initials_full}pao.gov")
+                domains.append(f"{initials_full}pa.com")
+                domains.append(f"{initials_full}pa.net")
         if is_city:
             domains.append(f"{concat}fl.gov")
             domains.append(f"{concat}fl.us")
@@ -1298,14 +1328,25 @@ def _generate_alternate_domains(jurisdiction_name: str,
         # ----- Texas-specific patterns -----
         # TX entities: {name}tx.gov, {name}texas.gov, {name}tx.us
         # Many TX cities use {name}tx.gov; counties use {name}county.org
+        # IMPORTANT: In Texas, Central Appraisal Districts (CADs) are
+        # independent taxing entities that are the primary GIS/parcel data
+        # custodians. Their domains are completely separate from county
+        # government (e.g., hcad.org for Harris County).
         if is_county:
             domains.append(f"{concat}countytx.org")
             domains.append(f"{concat}county.org")
             domains.append(f"{concat}tx.us")
             domains.append(f"{concat}countytx.gov")
-            # TX appraisal district pattern (CADs host GIS data)
+            # TX Central Appraisal District patterns (full name)
             domains.append(f"{concat}cad.org")
             domains.append(f"{concat}ad.org")
+            # TX CAD abbreviation patterns:
+            # {initials_full}cad.org (e.g., hcad.org for Harris County)
+            # {initials_full}cad.net (e.g., harrisoncad.net)
+            if len(initials_full) >= 2:
+                domains.append(f"{initials_full}cad.org")
+                domains.append(f"{initials_full}cad.net")
+                domains.append(f"{initials_full}ad.org")
         if is_city:
             domains.append(f"{concat}tx.gov")
             domains.append(f"{concat}texas.gov")

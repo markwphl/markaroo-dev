@@ -495,6 +495,13 @@ class TestOhioPatterns:
         assert "franklincountyauditor.org" in domains
         assert "franklincountyengineer.org" in domains
 
+    def test_oh_county_initials_ohio_org(self):
+        """OH counties should get {initials}ohio.org (e.g. mcohio.org)."""
+        domains = scanner._generate_alternate_domains(
+            "Montgomery County, OH", ""
+        )
+        assert "mcohio.org" in domains
+
     def test_oh_county_legacy(self):
         """OH counties should get co.{name}.oh.us legacy pattern."""
         domains = scanner._generate_alternate_domains(
@@ -535,6 +542,17 @@ class TestFloridaPatterns:
         assert "hillsboroughpa.com" in domains
         assert "hillsboroughappraiser.com" in domains
 
+    def test_fl_county_appraiser_abbreviations(self):
+        """FL counties should get abbreviated PA domain patterns
+        (e.g., scpafl.org, bcpao.us, bcpa.net)."""
+        domains = scanner._generate_alternate_domains(
+            "Seminole County, FL", ""
+        )
+        assert "scpafl.org" in domains
+        assert "scpao.us" in domains
+        assert "scpa.com" in domains
+        assert "scpa.net" in domains
+
     def test_fl_city(self):
         """FL cities should get FL-specific patterns."""
         domains = scanner._generate_alternate_domains(
@@ -565,6 +583,18 @@ class TestTexasPatterns:
         )
         assert "harriscad.org" in domains
         assert "harrisad.org" in domains
+
+    def test_tx_county_cad_abbreviations(self):
+        """TX counties should get abbreviated CAD patterns.
+        Harris County → initials_full "hc", so:
+          hcad.org  = {initials_full}ad.org  (hc + ad)
+          hccad.org = {initials_full}cad.org (hc + cad)
+        """
+        domains = scanner._generate_alternate_domains(
+            "Harris County, TX", ""
+        )
+        assert "hcad.org" in domains   # {initials_full}ad.org
+        assert "hccad.org" in domains  # {initials_full}cad.org
 
     def test_tx_city(self):
         """TX cities should get TX-specific patterns."""
@@ -597,6 +627,18 @@ class TestStateExtractionFallback:
         )
         # Should detect CA from URL and generate CA patterns
         assert "lake.ca.gov" in domains
+
+
+class TestGISSubdomainPrefixes:
+    """Tests for the GIS subdomain prefix list."""
+
+    def test_auditor_prefix_included(self):
+        """'auditor' should be a probed subdomain prefix (OH auditors host GIS)."""
+        assert "auditor" in scanner._GIS_SUBDOMAIN_PREFIXES
+
+    def test_gisapp_prefix_included(self):
+        """'gisapp' should be a probed subdomain prefix."""
+        assert "gisapp" in scanner._GIS_SUBDOMAIN_PREFIXES
 
 
 class TestDomainGenerationSecurity:
